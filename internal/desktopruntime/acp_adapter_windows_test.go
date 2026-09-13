@@ -129,3 +129,79 @@ func writeTestFile(t *testing.T, path, content string) string {
 	}
 	return filepath.Clean(absolute)
 }
+
+func TestResolveDesktopACPAdapterOpenCodeNativeNPMBinEntry(t *testing.T) {
+	testRoot := t.TempDir()
+	npmBin := filepath.Join(testRoot, "npm")
+	runtimeRoot := filepath.Join(testRoot, "runtime")
+	setIsolatedDesktopACPEnvironment(t, testRoot, npmBin)
+
+	// opencode-ai 的 bin 入口是原生 exe；没有 Node.js 也必须能直启。
+	packageRoot := filepath.Join(npmBin, "node_modules", "opencode-ai")
+	writeTestFile(t, filepath.Join(packageRoot, "package.json"), `{"bin":{"opencode":"./bin/opencode.exe"}}`)
+	entryPath := writeTestFile(t, filepath.Join(packageRoot, "bin", "opencode.exe"), "opencode")
+
+	adapter, err := resolveDesktopACPAdapter("opencode", runtimeRoot, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.Command != entryPath {
+		t.Fatalf("Command = %q, want %q", adapter.Command, entryPath)
+	}
+	if !reflect.DeepEqual(adapter.Args, []string{"acp"}) {
+		t.Fatalf("Args = %#v, want [acp]", adapter.Args)
+	}
+}
+
+func TestResolveDesktopACPAdapterOpenCodeDirectExecutable(t *testing.T) {
+	testRoot := t.TempDir()
+	bin := filepath.Join(testRoot, "bin")
+	runtimeRoot := filepath.Join(testRoot, "runtime")
+	setIsolatedDesktopACPEnvironment(t, testRoot, bin)
+
+	exePath := writeTestFile(t, filepath.Join(bin, "opencode.exe"), "opencode")
+	adapter, err := resolveDesktopACPAdapter("opencode", runtimeRoot, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.Command != exePath || !reflect.DeepEqual(adapter.Args, []string{"acp"}) {
+		t.Fatalf("adapter = %#v, want command=%q args=[acp]", adapter, exePath)
+	}
+}
+
+func TestResolveDesktopACPAdapterAtomCodeInstallDirectory(t *testing.T) {
+	testRoot := t.TempDir()
+	runtimeRoot := filepath.Join(testRoot, "runtime")
+	setIsolatedDesktopACPEnvironment(t, testRoot)
+
+	exePath := writeTestFile(t, filepath.Join(testRoot, "localappdata", "AtomCode", "atomcode.exe"), "atomcode")
+	adapter, err := resolveDesktopACPAdapter("atomcode", runtimeRoot, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.Command != exePath || !reflect.DeepEqual(adapter.Args, []string{"acp"}) {
+		t.Fatalf("adapter = %#v, want command=%q args=[acp]", adapter, exePath)
+	}
+}
+
+func TestResolveDesktopACPAdapterAtomCodeMissingExecutable(t *testing.T) {
+	testRoot := t.TempDir()
+	setIsolatedDesktopACPEnvironment(t, testRoot)
+
+	_, err := resolveDesktopACPAdapter("atomcode", filepath.Join(testRoot, "runtime"), "", nil)
+	if err == nil {
+		t.Fatal("expected missing atomcode executable to be rejected")
+	}
+	if !strings.Contains(err.Error(), "atomcode.exe") {
+		t.Fatalf("error = %q, want executable hint", err)
+	}
+}
+
+func TestResolveDesktopACPAdapterUnknownAgentStillRejected(t *testing.T) {
+	testRoot := t.TempDir()
+	setIsolatedDesktopACPEnvironment(t, testRoot)
+
+	if _, err := resolveDesktopACPAdapter("gemini", filepath.Join(testRoot, "runtime"), "", nil); err == nil {
+		t.Fatal("expected unknown preset to be rejected")
+	}
+}

@@ -118,7 +118,7 @@ func validateConfigUpdate(request ConfigUpdateRequest) error {
 		}
 	}
 	switch request.ACPAgent {
-	case "codex", "claude", "grok":
+	case "codex", "claude", "grok", "opencode", "atomcode":
 	case "custom":
 		if request.ACPEnabled && request.ACPCommand == "" {
 			return errors.New("自定义 Coding Agent 必须填写 ACP Adapter 命令")

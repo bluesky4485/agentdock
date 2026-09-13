@@ -252,6 +252,8 @@
                   <ComboBoxItem Content="Codex" Tag="codex" />
                   <ComboBoxItem Content="Claude" Tag="claude" />
                   <ComboBoxItem Content="Grok Build" Tag="grok" />
+                  <ComboBoxItem Content="OpenCode" Tag="opencode" />
+                  <ComboBoxItem Content="AtomCode" Tag="atomcode" />
                   <ComboBoxItem Content="{local:Loc Custom}" Tag="custom" />
                 </ComboBox>
                 <TextBlock x:Name="AcpCommandLabel" Grid.Row="2" Text="Command" VerticalAlignment="Center" Margin="0,0,0,10" />

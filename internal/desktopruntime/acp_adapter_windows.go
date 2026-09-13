@@ -52,6 +52,18 @@ func resolveDesktopACPAdapter(agent, runtimeRoot, configuredCommand string, conf
 			executableNames: []string{"grok.exe", "grok.com"},
 			args:            []string{"agent", "stdio"},
 		}
+	case "opencode":
+		preset = desktopACPAdapterPreset{
+			executableNames: []string{"opencode.exe", "opencode.com"},
+			args:            []string{"acp"},
+			npmPackage:      "opencode-ai",
+			npmBin:          "opencode",
+		}
+	case "atomcode":
+		preset = desktopACPAdapterPreset{
+			executableNames: []string{"atomcode.exe", "atomcode.com"},
+			args:            []string{"acp"},
+		}
 	default:
 		return desktopACPAdapter{}, fmt.Errorf("不支持的 Coding Agent: %s", agent)
 	}
@@ -94,7 +106,7 @@ func resolveDesktopACPAdapter(agent, runtimeRoot, configuredCommand string, conf
 	name := preset.executableNames[0]
 	if preset.npmPackage != "" {
 		return desktopACPAdapter{}, fmt.Errorf(
-			"未找到可直接执行的 Coding Agent：%s；也未找到可由 Node.js 启动的 %s",
+			"未找到可直接执行的 Coding Agent：%s；也未找到 npm 包 %s",
 			name,
 			preset.npmPackage,
 		)
@@ -127,7 +139,11 @@ func resolveConfiguredACPAdapter(command string, args []string) (desktopACPAdapt
 func desktopACPSearchDirectories(runtimeRoot string) []string {
 	var directories []string
 	if userHome, err := os.UserHomeDir(); err == nil {
-		directories = append(directories, filepath.Join(userHome, ".local", "bin"))
+		directories = append(directories,
+			filepath.Join(userHome, ".local", "bin"),
+			filepath.Join(userHome, ".cargo", "bin"),
+			filepath.Join(userHome, ".opencode", "bin"),
+		)
 	}
 	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
 		directories = append(directories, filepath.Join(appData, "npm"))
@@ -135,6 +151,7 @@ func desktopACPSearchDirectories(runtimeRoot string) []string {
 	if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
 		directories = append(directories,
 			filepath.Join(localAppData, "Programs", "Grok"),
+			filepath.Join(localAppData, "AtomCode"),
 			filepath.Join(localAppData, "Microsoft", "WinGet", "Links"),
 			filepath.Join(localAppData, "npm"),
 		)
@@ -168,16 +185,21 @@ func resolveNPMACPAdapter(preset desktopACPAdapterPreset, directories []string) 
 	if preset.npmPackage == "" || preset.npmBin == "" {
 		return desktopACPAdapter{}, false
 	}
-	node, ok := resolveNodeExecutable(directories)
-	if !ok {
-		return desktopACPAdapter{}, false
-	}
 	packagePath := filepath.FromSlash(preset.npmPackage)
 	for _, directory := range directories {
 		packageRoot := filepath.Join(directory, "node_modules", packagePath)
 		entry, ok := readNPMBinEntry(packageRoot, preset.npmBin)
 		if !ok {
 			continue
+		}
+		// 部分 npm 包（如 opencode-ai）的 bin 入口就是原生二进制，可直接启动，
+		// 不能包一层 node；仅 JS 入口才需要 Node.js 运行时。
+		if absolute, ok := regularWindowsExecutable(entry); ok {
+			return desktopACPAdapter{Command: absolute, Args: append([]string(nil), preset.args...)}, true
+		}
+		node, ok := resolveNodeExecutable(directories)
+		if !ok {
+			return desktopACPAdapter{}, false
 		}
 		args := make([]string, 0, 1+len(preset.args))
 		args = append(args, entry)

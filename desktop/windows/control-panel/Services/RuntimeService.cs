@@ -1093,6 +1093,8 @@ public sealed class RuntimeService : IDisposable
             "codex" => "codex",
             "claude" => "claude",
             "grok" => "grok",
+            "opencode" => "opencode",
+            "atomcode" => "atomcode",
             "custom" => "custom",
             var unsupported => throw new InvalidOperationException(UiText.Format("UnsupportedCodingAgentValue", unsupported ?? "<null>"))
         };

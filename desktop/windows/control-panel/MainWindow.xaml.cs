@@ -636,6 +636,8 @@ public partial class MainWindow : Window
         "codex" => "Codex",
         "claude" => "Claude",
         "grok" => "Grok Build",
+        "opencode" => "OpenCode",
+        "atomcode" => "AtomCode",
         "custom" => UiText.Get("Custom"),
         _ => throw new ArgumentOutOfRangeException(nameof(agent), agent, UiText.Get("UnsupportedCodingAgent"))
     };

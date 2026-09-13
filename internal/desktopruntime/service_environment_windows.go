@@ -199,7 +199,7 @@ func loadControlPanelSettings(runtimeRoot string, fallbackPort int) (controlPane
 		settings.ACPCommand = filepath.Clean(settings.ACPCommand)
 	}
 	switch settings.ACPAgent {
-	case "codex", "claude", "grok", "custom":
+	case "codex", "claude", "grok", "opencode", "atomcode", "custom":
 	default:
 		return controlPanelSettings{}, fmt.Errorf("不支持的 Coding Agent: %s", settings.ACPAgent)
 	}
