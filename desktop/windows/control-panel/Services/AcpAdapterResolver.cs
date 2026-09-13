@@ -37,6 +37,18 @@ internal static class AcpAdapterResolver
                 npmPackageSegments = null;
                 npmBinName = null;
                 break;
+            case "opencode":
+                executableNames = ["opencode.exe", "opencode.com"];
+                arguments = ["acp"];
+                npmPackageSegments = ["opencode-ai"];
+                npmBinName = "opencode";
+                break;
+            case "atomcode":
+                executableNames = ["atomcode.exe", "atomcode.com"];
+                arguments = ["acp"];
+                npmPackageSegments = null;
+                npmBinName = null;
+                break;
             case "codex":
                 executableNames = ["codex-acp.exe", "codex-acp.com"];
                 arguments = [];
@@ -107,11 +119,15 @@ internal static class AcpAdapterResolver
 
     private static List<string> SearchDirectories(string runtimeRoot)
     {
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var directories = new List<string>
         {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin"),
+            Path.Combine(userProfile, ".local", "bin"),
+            Path.Combine(userProfile, ".cargo", "bin"),
+            Path.Combine(userProfile, ".opencode", "bin"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Grok"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AtomCode"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WinGet", "Links"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "npm"),
             Path.Combine(runtimeRoot, "bin")
@@ -151,10 +167,6 @@ internal static class AcpAdapterResolver
         out AcpAdapterResolution resolution)
     {
         resolution = Unavailable();
-        if (!TryResolveNodeExecutable(directories, out var nodePath))
-        {
-            return false;
-        }
 
         foreach (var directory in directories)
         {
@@ -168,6 +180,18 @@ internal static class AcpAdapterResolver
                 continue;
             }
 
+            // 部分 npm 包（如 opencode-ai）的 bin 入口就是原生二进制，可直接启动，不能包一层 node。
+            if (IsNativeWindowsExecutable(entryPath))
+            {
+                resolution = Available(entryPath, presetArguments, UiText.Format("AcpDetectedPath", entryPath));
+                return true;
+            }
+
+            if (!TryResolveNodeExecutable(directories, out var nodePath))
+            {
+                return false;
+            }
+
             var arguments = new List<string> { entryPath };
             arguments.AddRange(presetArguments);
             resolution = Available(
@@ -178,6 +202,10 @@ internal static class AcpAdapterResolver
         }
         return false;
     }
+
+    private static bool IsNativeWindowsExecutable(string path) =>
+        Path.GetExtension(path).Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+        Path.GetExtension(path).Equals(".com", StringComparison.OrdinalIgnoreCase);
 
     private static bool TryResolveNodeExecutable(IReadOnlyList<string> directories, out string nodePath)
     {
@@ -294,6 +322,8 @@ internal static class AcpAdapterResolver
         "codex" => "codex",
         "claude" => "claude",
         "grok" => "grok",
+        "opencode" => "opencode",
+        "atomcode" => "atomcode",
         "custom" => "custom",
         var unsupported => throw new ArgumentException(UiText.Format("UnsupportedCodingAgentValue", unsupported), nameof(value))
     };

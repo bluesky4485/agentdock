@@ -1,6 +1,6 @@
 ---
 name: agentdock-user-guide
-description: 当用户询问 AgentDock 是什么、如何使用、配置在哪里、不同平台或安装方式怎样修改配置并生效、如何重启或验证配置、如何发现并配置 Codex/Claude/Grok 等 Coding Agent 的 ACP，以及常见运行问题时使用；覆盖 macOS Desktop、Windows Desktop、Linux 服务、Docker 和直接运行二进制，不用于源码开发与贡献流程。
+description: 当用户询问 AgentDock 是什么、如何使用、配置在哪里、不同平台或安装方式怎样修改配置并生效、如何重启或验证配置、如何发现并配置 Codex/Claude/Grok/OpenCode/AtomCode 等 Coding Agent 的 ACP，以及常见运行问题时使用；覆盖 macOS Desktop、Windows Desktop、Linux 服务、Docker 和直接运行二进制，不用于源码开发与贡献流程。
 version: 1.1.0
 ---
 
@@ -82,7 +82,7 @@ AgentDock 主仓库的 `core-skills/` 只保留必须随 AgentDock 运行时一�
 - macOS、Windows、Linux、Docker、直接运行二进制之间的配置差异；
 - Core 的启动、停止、重启、健康检查和配置生效验证；
 - 浏览器、MCP Apps UI、端口、日志、OAuth 等运行配置的入口；
-- 发现本机已有 Codex、Claude、Grok 等 Coding Agent，补齐缺失 ACP Adapter，并把 ACP 正确接入 AgentDock；
+- 发现本机已有 Codex、Claude、Grok、OpenCode、AtomCode 等 Coding Agent，补齐缺失 ACP Adapter，并把 ACP 正确接入 AgentDock；
 - 多台 AgentDock 设备中，确认应该修改哪一台设备的运行配置。
 
 不要用本 Skill 代替：
