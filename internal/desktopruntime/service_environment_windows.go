@@ -30,6 +30,8 @@ var managedCoreEnvironment = []string{
 	"AGENTDOCK_BROWSER_CDP_URL",
 	"AGENTDOCK_BROWSER_REUSE_EXISTING_CDP",
 	"AGENTDOCK_ACP_ENABLED",
+	"AGENTDOCK_ACP_PROFILES_JSON",
+	"AGENTDOCK_ACP_DEFAULT_PROFILE",
 	"AGENTDOCK_ACP_AGENT",
 	"AGENTDOCK_ACP_COMMAND",
 	"AGENTDOCK_ACP_ARGS_JSON",
@@ -45,17 +47,16 @@ var managedCoreEnvironment = []string{
 }
 
 type controlPanelSettings struct {
-	Port                    int      `json:"port"`
-	LogLevel                string   `json:"log_level"`
-	OAuthAccessTokenTTL     string   `json:"oauth_access_token_ttl,omitempty"`
-	MCPAppsEnabled          bool     `json:"mcp_apps_enabled"`
-	BrowserEnabled          bool     `json:"browser_enabled"`
-	BrowserCDPURL           string   `json:"browser_cdp_url"`
-	BrowserReuseExistingCDP bool     `json:"browser_reuse_existing_cdp"`
-	ACPEnabled              bool     `json:"acp_enabled"`
-	ACPAgent                string   `json:"acp_agent"`
-	ACPCommand              string   `json:"acp_command"`
-	ACPArgs                 []string `json:"acp_args"`
+	Port                    int                      `json:"port"`
+	LogLevel                string                   `json:"log_level"`
+	OAuthAccessTokenTTL     string                   `json:"oauth_access_token_ttl,omitempty"`
+	MCPAppsEnabled          bool                     `json:"mcp_apps_enabled"`
+	BrowserEnabled          bool                     `json:"browser_enabled"`
+	BrowserCDPURL           string                   `json:"browser_cdp_url"`
+	BrowserReuseExistingCDP bool                     `json:"browser_reuse_existing_cdp"`
+	ACPEnabled              bool                     `json:"acp_enabled"`
+	ACPProfiles             []agentconfig.ACPProfile `json:"acp_profiles,omitempty"`
+	ACPDefaultProfile       string                   `json:"acp_default_profile,omitempty"`
 }
 
 func platformPrepareCoreEnvironment(runtimeRoot string) error {
@@ -79,12 +80,9 @@ func platformPrepareCoreEnvironment(runtimeRoot string) error {
 	if err := os.Remove(legacyNexusTokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("删除已废弃的 Nexus Token 失败: %w", err)
 	}
-	authToken, err := readProtectedText(filepath.Join(root, "auth-token.dpapi"), "agentdock.startup.v1")
+	authToken, err := readOrCreateProtectedText(filepath.Join(root, "auth-token.dpapi"), "agentdock.startup.v1", 32, "Bearer Token")
 	if err != nil {
-		return fmt.Errorf("读取 Bearer Token 失败: %w", err)
-	}
-	if strings.TrimSpace(authToken) == "" {
-		return errors.New("Bearer Token 为空，请运行 Setup.exe 修复安装")
+		return err
 	}
 
 	managed := map[string]string{
@@ -108,20 +106,27 @@ func platformPrepareCoreEnvironment(runtimeRoot string) error {
 		managed["AGENTDOCK_BROWSER_CDP_URL"] = settings.BrowserCDPURL
 	}
 	if settings.ACPEnabled {
-		info, statErr := os.Stat(settings.ACPCommand)
-		if statErr != nil {
-			return fmt.Errorf("读取 Coding Agent 命令失败 %s: %w", settings.ACPCommand, statErr)
+		if len(settings.ACPProfiles) == 0 {
+			return errors.New("启用 Coding Agent 时至少需要一个 ACP Profile")
 		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("Coding Agent 命令不是普通文件: %s", settings.ACPCommand)
+		for _, profile := range settings.ACPProfiles {
+			if !profile.Enabled {
+				continue
+			}
+			info, statErr := os.Stat(profile.Command)
+			if statErr != nil {
+				return fmt.Errorf("读取 ACP Profile %s 命令失败 %s: %w", profile.ID, profile.Command, statErr)
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("ACP Profile %s 命令不是普通文件: %s", profile.ID, profile.Command)
+			}
 		}
-		argsJSON, marshalErr := json.Marshal(settings.ACPArgs)
+		profilesJSON, marshalErr := json.Marshal(settings.ACPProfiles)
 		if marshalErr != nil {
-			return fmt.Errorf("编码 Coding Agent 参数失败: %w", marshalErr)
+			return fmt.Errorf("编码 ACP Profiles 失败: %w", marshalErr)
 		}
-		managed["AGENTDOCK_ACP_AGENT"] = settings.ACPAgent
-		managed["AGENTDOCK_ACP_COMMAND"] = settings.ACPCommand
-		managed["AGENTDOCK_ACP_ARGS_JSON"] = string(argsJSON)
+		managed["AGENTDOCK_ACP_PROFILES_JSON"] = string(profilesJSON)
+		managed["AGENTDOCK_ACP_DEFAULT_PROFILE"] = settings.ACPDefaultProfile
 	}
 
 	serverURL, err := readTrimmedText(filepath.Join(root, "server-url.txt"))
@@ -136,13 +141,13 @@ func platformPrepareCoreEnvironment(runtimeRoot string) error {
 		if err := writeRuntimeText(filepath.Join(root, "server-url.txt"), serverURL); err != nil {
 			return err
 		}
-		oauthPassword, passwordErr := readProtectedText(filepath.Join(root, "oauth-password.dpapi"), "agentdock.oauth.password.v1")
+		oauthPassword, passwordErr := readOrCreateProtectedText(filepath.Join(root, "oauth-password.dpapi"), "agentdock.oauth.password.v1", 12, "OAuth 密码")
 		if passwordErr != nil {
-			return fmt.Errorf("读取 OAuth 密码失败: %w", passwordErr)
+			return passwordErr
 		}
-		oauthSecret, secretErr := readProtectedText(filepath.Join(root, "oauth-token-secret.dpapi"), "agentdock.oauth.secret.v1")
+		oauthSecret, secretErr := readOrCreateProtectedText(filepath.Join(root, "oauth-token-secret.dpapi"), "agentdock.oauth.secret.v1", 32, "OAuth 签名密钥")
 		if secretErr != nil {
-			return fmt.Errorf("读取 OAuth 签名密钥失败: %w", secretErr)
+			return secretErr
 		}
 		managed["AGENTDOCK_SERVER_URL"] = serverURL
 		managed["AGENTDOCK_OAUTH_ENABLED"] = "true"
@@ -163,7 +168,7 @@ func platformPrepareCoreEnvironment(runtimeRoot string) error {
 }
 
 func loadControlPanelSettings(runtimeRoot string, fallbackPort int) (controlPanelSettings, error) {
-	settings := controlPanelSettings{Port: fallbackPort, LogLevel: "info", MCPAppsEnabled: true, ACPAgent: "codex"}
+	settings := controlPanelSettings{Port: fallbackPort, LogLevel: "info", MCPAppsEnabled: true}
 	data, err := os.ReadFile(filepath.Join(runtimeRoot, "control-panel-settings.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		return settings, nil
@@ -190,21 +195,53 @@ func loadControlPanelSettings(runtimeRoot string, fallbackPort int) (controlPane
 			return controlPanelSettings{}, fmt.Errorf("OAuth Access Token 有效期无效: %w", err)
 		}
 	}
-	settings.ACPAgent = strings.ToLower(strings.TrimSpace(settings.ACPAgent))
-	if settings.ACPAgent == "" {
-		settings.ACPAgent = "codex"
+	if len(settings.ACPProfiles) == 0 {
+		// 旧 control-panel-settings.json 只在读取边界迁移一次；新文件只保存 Profiles。
+		var legacy struct {
+			Agent   string   `json:"acp_agent"`
+			Command string   `json:"acp_command"`
+			Args    []string `json:"acp_args"`
+		}
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return controlPanelSettings{}, fmt.Errorf("解析旧 ACP 控制面板设置失败: %w", err)
+		}
+		legacy.Agent = strings.ToLower(strings.TrimSpace(legacy.Agent))
+		if legacy.Agent != "" {
+			if legacy.Agent != "codex" && legacy.Agent != "claude" && legacy.Agent != "grok" && legacy.Agent != "opencode" && legacy.Agent != "atomcode" && legacy.Agent != "custom" {
+				return controlPanelSettings{}, fmt.Errorf("不支持的 Coding Agent: %s", legacy.Agent)
+			}
+			settings.ACPProfiles = []agentconfig.ACPProfile{{
+				ID: legacy.Agent, Kind: legacy.Agent, Command: strings.TrimSpace(legacy.Command),
+				Args: append([]string(nil), legacy.Args...), Enabled: true,
+			}}
+			settings.ACPDefaultProfile = legacy.Agent
+		}
 	}
-	settings.ACPCommand = strings.TrimSpace(settings.ACPCommand)
-	if settings.ACPCommand != "" {
-		settings.ACPCommand = filepath.Clean(settings.ACPCommand)
-	}
-	switch settings.ACPAgent {
-	case "codex", "claude", "grok", "opencode", "atomcode", "custom":
-	default:
-		return controlPanelSettings{}, fmt.Errorf("不支持的 Coding Agent: %s", settings.ACPAgent)
-	}
-	if settings.ACPEnabled && !filepath.IsAbs(settings.ACPCommand) {
-		return controlPanelSettings{}, fmt.Errorf("Coding Agent 命令必须是绝对路径: %s", settings.ACPCommand)
+	if len(settings.ACPProfiles) > 0 {
+		firstEnabled := ""
+		for index := range settings.ACPProfiles {
+			profile := &settings.ACPProfiles[index]
+			profile.ID = strings.TrimSpace(profile.ID)
+			profile.Kind = strings.ToLower(strings.TrimSpace(profile.Kind))
+			profile.Command = strings.TrimSpace(profile.Command)
+			if profile.Command != "" {
+				profile.Command = filepath.Clean(profile.Command)
+			}
+			if profile.Enabled && firstEnabled == "" {
+				firstEnabled = profile.ID
+			}
+		}
+		settings.ACPDefaultProfile = strings.TrimSpace(settings.ACPDefaultProfile)
+		if settings.ACPDefaultProfile == "" {
+			settings.ACPDefaultProfile = firstEnabled
+		}
+		request := ConfigUpdateRequest{
+			RuntimeRoot: runtimeRoot, Port: settings.Port, LogLevel: settings.LogLevel,
+			ACPEnabled: settings.ACPEnabled, ACPProfiles: settings.ACPProfiles, ACPDefaultProfile: settings.ACPDefaultProfile,
+		}
+		if err := validateConfigACPProfiles(request); err != nil {
+			return controlPanelSettings{}, err
+		}
 	}
 	return settings, nil
 }
