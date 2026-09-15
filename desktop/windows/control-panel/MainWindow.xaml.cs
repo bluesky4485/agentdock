@@ -771,12 +771,12 @@ public partial class MainWindow : Window
                 MessageBox.Show(this, $"Invalid Coding Agent profile ID: {profile.Id}", "AgentDock", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            if ((profile.Kind is "codex" or "claude" or "grok" or "opencode" or "atomcode") && profile.Id != profile.Kind)
+            if ((profile.Kind is "codex" or "claude" or "grok" or "opencode" or "atomcode" or "kimi") && profile.Id != profile.Kind)
             {
                 MessageBox.Show(this, $"Built-in Coding Agent {profile.Kind} must use profile ID {profile.Kind}.", "AgentDock", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            if (profile.Kind == "custom" && (profile.Id is "codex" or "claude" or "grok" or "opencode" or "atomcode"))
+            if (profile.Kind == "custom" && (profile.Id is "codex" or "claude" or "grok" or "opencode" or "atomcode" or "kimi"))
             {
                 MessageBox.Show(this, $"Custom Coding Agent profile ID {profile.Id} is reserved.", "AgentDock", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
@@ -938,6 +938,7 @@ public partial class MainWindow : Window
         "grok" => "Grok Build",
         "opencode" => "OpenCode",
         "atomcode" => "AtomCode",
+        "kimi" => "Kimi Code",
         "custom" => UiText.Get("Custom"),
         _ => throw new ArgumentOutOfRangeException(nameof(agent), agent, UiText.Get("UnsupportedCodingAgent"))
     };

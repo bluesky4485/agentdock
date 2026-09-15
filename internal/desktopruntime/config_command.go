@@ -156,12 +156,12 @@ func validateConfigACPProfiles(request ConfigUpdateRequest) error {
 		}
 		seen[id] = struct{}{}
 		switch kind {
-		case "codex", "claude", "grok", "opencode", "atomcode":
+		case "codex", "claude", "grok", "opencode", "atomcode", "kimi":
 			if id != kind {
 				return fmt.Errorf("内置 ACP %s 必须使用固定 Profile ID %s", kind, kind)
 			}
 		case "custom":
-			if id == "codex" || id == "claude" || id == "grok" || id == "opencode" || id == "atomcode" {
+			if id == "codex" || id == "claude" || id == "grok" || id == "opencode" || id == "atomcode" || id == "kimi" {
 				return fmt.Errorf("自定义 ACP Profile ID %s 已被内置 ACP 保留", id)
 			}
 		default:

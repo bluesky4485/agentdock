@@ -18,6 +18,7 @@ enum ACPAgentPreset: String, CaseIterable, Codable {
     case grok
     case opencode
     case atomcode
+    case kimi
     case custom
 
     var title: String {
@@ -27,6 +28,7 @@ enum ACPAgentPreset: String, CaseIterable, Codable {
         case .grok: return "Grok Build"
         case .opencode: return "OpenCode"
         case .atomcode: return "AtomCode"
+        case .kimi: return "Kimi Code"
         case .custom: return L10n.text("Custom")
         }
     }
@@ -38,6 +40,7 @@ enum ACPAgentPreset: String, CaseIterable, Codable {
         case .grok: return ["grok"]
         case .opencode: return ["opencode"]
         case .atomcode: return ["atomcode"]
+        case .kimi: return ["kimi"]
         case .custom: return []
         }
     }
@@ -45,7 +48,7 @@ enum ACPAgentPreset: String, CaseIterable, Codable {
     var arguments: [String] {
         switch self {
         case .grok: return ["agent", "stdio"]
-        case .opencode, .atomcode: return ["acp"]
+        case .opencode, .atomcode, .kimi: return ["acp"]
         case .codex, .claude, .custom: return []
         }
     }
@@ -56,7 +59,7 @@ enum ACPAgentPreset: String, CaseIterable, Codable {
             return ACPNodePackage(name: "@agentclientprotocol/codex-acp", binName: "codex-acp")
         case .claude:
             return ACPNodePackage(name: "@agentclientprotocol/claude-agent-acp", binName: "claude-agent-acp")
-        case .grok, .opencode, .atomcode, .custom:
+        case .grok, .opencode, .atomcode, .kimi, .custom:
             return nil
         }
     }
@@ -238,6 +241,7 @@ enum ACPAgentPreset: String, CaseIterable, Codable {
             home.appendingPathComponent(".local/bin", isDirectory: true),
             home.appendingPathComponent(".cargo/bin", isDirectory: true),
             home.appendingPathComponent(".opencode/bin", isDirectory: true),
+            home.appendingPathComponent(".kimi-code", isDirectory: true),
             URL(fileURLWithPath: "/opt/homebrew/bin", isDirectory: true),
             URL(fileURLWithPath: "/usr/local/bin", isDirectory: true),
             URL(fileURLWithPath: "/usr/bin", isDirectory: true),

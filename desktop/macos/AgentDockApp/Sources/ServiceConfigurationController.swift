@@ -64,12 +64,12 @@ struct EditableServiceSettings {
                 throw ValidationError(L10n.format("Duplicate Coding Agent profile ID: %@", profile.id))
             }
             switch profile.kind {
-            case .codex, .claude, .grok, .opencode, .atomcode:
+            case .codex, .claude, .grok, .opencode, .atomcode, .kimi:
                 guard profile.id == profile.kind.rawValue else {
                     throw ValidationError(L10n.format("Built-in Coding Agent %@ must use profile ID %@.", profile.kind.title, profile.kind.rawValue))
                 }
             case .custom:
-                guard !["codex", "claude", "grok", "opencode", "atomcode"].contains(profile.id) else {
+                guard !["codex", "claude", "grok", "opencode", "atomcode", "kimi"].contains(profile.id) else {
                     throw ValidationError(L10n.format("Custom Coding Agent profile ID %@ is reserved.", profile.id))
                 }
             }

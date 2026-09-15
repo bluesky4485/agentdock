@@ -205,3 +205,31 @@ func TestResolveDesktopACPAdapterUnknownAgentStillRejected(t *testing.T) {
 		t.Fatal("expected unknown preset to be rejected")
 	}
 }
+
+func TestResolveDesktopACPAdapterKimiInstallDirectory(t *testing.T) {
+	testRoot := t.TempDir()
+	runtimeRoot := filepath.Join(testRoot, "runtime")
+	setIsolatedDesktopACPEnvironment(t, testRoot)
+
+	exePath := writeTestFile(t, filepath.Join(testRoot, "user", ".kimi-code", "kimi.exe"), "kimi")
+	adapter, err := resolveDesktopACPAdapter("kimi", runtimeRoot, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.Command != exePath || !reflect.DeepEqual(adapter.Args, []string{"acp"}) {
+		t.Fatalf("adapter = %#v, want command=%q args=[acp]", adapter, exePath)
+	}
+}
+
+func TestResolveDesktopACPAdapterKimiMissingExecutable(t *testing.T) {
+	testRoot := t.TempDir()
+	setIsolatedDesktopACPEnvironment(t, testRoot)
+
+	_, err := resolveDesktopACPAdapter("kimi", filepath.Join(testRoot, "runtime"), "", nil)
+	if err == nil {
+		t.Fatal("expected missing kimi executable to be rejected")
+	}
+	if !strings.Contains(err.Error(), "kimi.exe") {
+		t.Fatalf("error = %q, want executable hint", err)
+	}
+}

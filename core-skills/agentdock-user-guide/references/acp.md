@@ -1,6 +1,6 @@
 # Coding Agent（ACP）
 
-AgentDock 可以作为 ACP Client，把 ChatGPT 或其他 MCP 客户端的编码任务交给运行 AgentDock 的那台电脑上的本地 Coding Agent。当前桌面预设支持 Codex、Claude、Grok Build、OpenCode 和 AtomCode，也支持自定义 ACP Adapter。
+AgentDock 可以作为 ACP Client，把 ChatGPT 或其他 MCP 客户端的编码任务交给运行 AgentDock 的那台电脑上的本地 Coding Agent。当前桌面预设支持 Codex、Claude、Grok Build、OpenCode、AtomCode 和 Kimi Code，也支持自定义 ACP Adapter。
 
 配置 ACP 时不要先假定用户使用哪一个 Agent。先检查真实宿主机，再决定是否需要安装 Adapter 和修改 AgentDock。
 
@@ -8,20 +8,20 @@ AgentDock 可以作为 ACP Client，把 ChatGPT 或其他 MCP 客户端的编码
 
 先确认实际运行 AgentDock Core 的设备和运行用户，再检查：
 
-- Provider CLI：`codex`、`claude`、`grok`、`opencode`、`atomcode`；
-- ACP Adapter：`codex-acp`、`claude-agent-acp`（仅 Codex / Claude 需要；OpenCode 和 AtomCode 原生实现 ACP，不需要 Adapter）；
+- Provider CLI：`codex`、`claude`、`grok`、`opencode`、`atomcode`、`kimi`；
+- ACP Adapter：`codex-acp`、`claude-agent-acp`（仅 Codex / Claude 需要；OpenCode、AtomCode 和 Kimi Code 原生实现 ACP，不需要 Adapter）；
 - Codex / Claude Adapter 需要的 Node.js / npm：`node`、`npm`。
 
 POSIX 系统可以从当前运行用户的真实 PATH 和常见安装目录检查，例如：
 
 ```bash
-command -v codex claude grok opencode atomcode codex-acp claude-agent-acp node npm || true
+command -v codex claude grok opencode atomcode kimi codex-acp claude-agent-acp node npm || true
 ```
 
 Windows 可以使用当前 AgentDock 运行用户检查：
 
 ```powershell
-Get-Command codex,claude,grok,opencode,atomcode,codex-acp,claude-agent-acp,node,npm -ErrorAction SilentlyContinue
+Get-Command codex,claude,grok,opencode,atomcode,kimi,codex-acp,claude-agent-acp,node,npm -ErrorAction SilentlyContinue
 ```
 
 不要把“Provider CLI 已安装”误判成“ACP 已可用”。AgentDock 当前预设实际使用：
@@ -33,6 +33,7 @@ Get-Command codex,claude,grok,opencode,atomcode,codex-acp,claude-agent-acp,node,
 | Grok Build | 直接执行 `grok agent stdio` |
 | OpenCode | 直接执行 `opencode acp`（原生 ACP） |
 | AtomCode | 直接执行 `atomcode acp`（原生 ACP） |
+| Kimi Code | 直接执行 `kimi acp`（原生 ACP） |
 | 自定义 | 用户提供的 ACP Adapter 绝对可执行路径和参数 |
 
 如果 `agentdock_context` 已显示 ACP 已启用并且当前 Agent 正常，不要为了“重新配置”无条件覆盖现有选择。用户已经指定目标 Agent 时按用户选择；未指定时，只有一个可用 Provider 时可以直接使用它。存在多个可用 Provider 且当前没有有效选择时，应先让用户选择，避免擅自改变账号、配额或模型来源。
@@ -101,7 +102,15 @@ AtomCode 原生实现 ACP，不需要 npm ACP Adapter。确认已安装 AtomCode
 atomcode acp
 ```
 
-不要在聊天、日志或配置文件中回显 Provider Token。Codex、Claude、Grok、OpenCode、AtomCode 的账号登录由对应 Provider 自己管理；AgentDock 只负责启动 Adapter。只有确实需要把宿主环境变量映射给自定义 Adapter 时，才在对应 Profile 的 `env_from_env` 中声明变量名映射，并且只保存变量名，不写入 secret 值；旧 `AGENTDOCK_ACP_ENV_FROM_ENV_JSON` 仅用于单 ACP 配置升级兼容。
+### Kimi Code
+
+Kimi Code CLI 原生实现 ACP，不需要 npm ACP Adapter。确认已安装 Kimi Code（官方安装脚本默认安装到 `%USERPROFILE%\.kimi-code`，命令名为 `kimi`），并且 Kimi 自己的登录已经完成（终端运行 `kimi` 后执行 `/login`，或直接运行 `kimi login`；它的凭据由 Kimi 自己管理）。AgentDock 直接启动：
+
+```text
+kimi acp
+```
+
+不要在聊天、日志或配置文件中回显 Provider Token。Codex、Claude、Grok、OpenCode、AtomCode、Kimi Code 的账号登录由对应 Provider 自己管理；AgentDock 只负责启动 Adapter。只有确实需要把宿主环境变量映射给自定义 Adapter 时，才在对应 Profile 的 `env_from_env` 中声明变量名映射，并且只保存变量名，不写入 secret 值；旧 `AGENTDOCK_ACP_ENV_FROM_ENV_JSON` 仅用于单 ACP 配置升级兼容。
 
 ## 配置 AgentDock
 
@@ -111,7 +120,7 @@ atomcode acp
 
 1. 打开 **Coding Agent（ACP）**；
 2. 勾选“启用 Coding Agent”；
-3. 新增或选择一个 Profile；内置 Codex、Claude、Grok Build、OpenCode、AtomCode 各只能存在一个，Custom 可以创建多个；
+3. 新增或选择一个 Profile；内置 Codex、Claude、Grok Build、OpenCode、AtomCode、Kimi Code 各只能存在一个，Custom 可以创建多个；
 4. Custom Profile 使用独立 ID，例如 `zcode`、`agy`，并配置对应 Adapter；
 5. 选择一个已启用 Profile 作为默认 Profile，确认界面显示 Adapter 可用后保存设置。
 
@@ -119,7 +128,7 @@ macOS Desktop 会根据预设自动解析实际 Adapter 路径和参数，原子
 
 ### Windows Desktop
 
-优先使用 AgentDock 控制面板管理 ACP Profiles。内置 Codex、Claude、Grok Build、OpenCode、AtomCode 使用固定 Profile ID 且各只能存在一个；Custom 可以创建多个独立 ID。Windows Desktop 会在 PATH、用户 npm 目录、cargo bin、OpenCode / AtomCode 安装目录、WinGet 链接等位置解析 Adapter；Codex / Claude 会识别对应 npm package 的 Node.js 入口，OpenCode 会识别 npm 包里的原生二进制入口。
+优先使用 AgentDock 控制面板管理 ACP Profiles。内置 Codex、Claude、Grok Build、OpenCode、AtomCode、Kimi Code 使用固定 Profile ID 且各只能存在一个；Custom 可以创建多个独立 ID。Windows Desktop 会在 PATH、用户 npm 目录、cargo bin、OpenCode / AtomCode 安装目录、用户目录 `.kimi-code`、WinGet 链接等位置解析 Adapter；Codex / Claude 会识别对应 npm package 的 Node.js 入口，OpenCode 会识别 npm 包里的原生二进制入口。
 
 如果必须使用 `agentdock config update`，先读取当前完整控制面板配置，再把端口、日志、浏览器、MCP Apps 等现有设置连同 ACP 设置一起提交；不要只传 ACP 参数导致其他桌面设置被默认值覆盖。
 
@@ -199,6 +208,7 @@ AgentDock 对外保留稳定的管理语义，不把 ACP 协议的每个底层�
 - 找到 `grok`：检查它是否支持并能运行 `agent stdio`，不额外安装 Codex / Claude 的 npm Adapter。
 - 找到 `opencode`：OpenCode 原生支持 ACP，直接解析 `opencode acp` 入口，不安装 Codex / Claude 的 npm Adapter；Windows npm 全局目录里只有 shim 属于正常形态，AgentDock 会识别 npm 包内的原生二进制。
 - 找到 `atomcode`：AtomCode 原生支持 ACP，直接解析 `atomcode acp` 入口，不安装 Codex / Claude 的 npm Adapter。
+- 找到 `kimi`：Kimi Code 原生支持 ACP，直接解析 `kimi acp` 入口，不安装 Codex / Claude 的 npm Adapter；未登录时先 `kimi login`。
 - OpenCode / AtomCode 预设解析成功但建会话失败：OpenCode 先完成 `opencode auth login`；AtomCode 先完成它自己的模型配置。两者的凭据都不由 AgentDock 代管。
 - Adapter 在用户 shell 可见、服务里不可见：检查 AgentDock 实际运行用户和 PATH，不要只在另一个登录 shell 中验证。
 - `agentdock_context` 显示 ACP 已启用但 ChatGPT 没有 ACP 工具：先按 ChatGPT 工具 Schema 缓存流程刷新插件并新建会话。

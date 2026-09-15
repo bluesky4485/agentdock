@@ -207,7 +207,7 @@ func loadControlPanelSettings(runtimeRoot string, fallbackPort int) (controlPane
 		}
 		legacy.Agent = strings.ToLower(strings.TrimSpace(legacy.Agent))
 		if legacy.Agent != "" {
-			if legacy.Agent != "codex" && legacy.Agent != "claude" && legacy.Agent != "grok" && legacy.Agent != "opencode" && legacy.Agent != "atomcode" && legacy.Agent != "custom" {
+			if legacy.Agent != "codex" && legacy.Agent != "claude" && legacy.Agent != "grok" && legacy.Agent != "opencode" && legacy.Agent != "atomcode" && legacy.Agent != "kimi" && legacy.Agent != "custom" {
 				return controlPanelSettings{}, fmt.Errorf("不支持的 Coding Agent: %s", legacy.Agent)
 			}
 			settings.ACPProfiles = []agentconfig.ACPProfile{{

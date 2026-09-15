@@ -1125,6 +1125,7 @@ public sealed class RuntimeService : IDisposable
             "grok" => "grok",
             "opencode" => "opencode",
             "atomcode" => "atomcode",
+            "kimi" => "kimi",
             "custom" => "custom",
             var unsupported => throw new InvalidOperationException(UiText.Format("UnsupportedCodingAgentValue", unsupported ?? "<null>"))
         };

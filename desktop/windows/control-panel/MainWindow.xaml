@@ -279,6 +279,7 @@
                   <ComboBoxItem Content="Grok Build" Tag="grok" />
                   <ComboBoxItem Content="OpenCode" Tag="opencode" />
                   <ComboBoxItem Content="AtomCode" Tag="atomcode" />
+                  <ComboBoxItem Content="Kimi Code" Tag="kimi" />
                   <ComboBoxItem Content="{local:Loc Custom}" Tag="custom" />
                 </ComboBox>
                 <TextBlock x:Name="AcpCommandLabel" Grid.Row="5" Text="Command" VerticalAlignment="Center" Margin="0,0,0,10" />

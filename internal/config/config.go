@@ -448,12 +448,12 @@ func (c *Config) normalizeACPProfiles() error {
 		seen[profile.ID] = struct{}{}
 
 		switch profile.Kind {
-		case "codex", "claude", "grok", "opencode", "atomcode":
+		case "codex", "claude", "grok", "opencode", "atomcode", "kimi":
 			if profile.ID != profile.Kind {
 				return fmt.Errorf("built-in ACP profile %q must use id %q", profile.Kind, profile.Kind)
 			}
 		case "custom":
-			if profile.ID == "codex" || profile.ID == "claude" || profile.ID == "grok" || profile.ID == "opencode" || profile.ID == "atomcode" {
+			if profile.ID == "codex" || profile.ID == "claude" || profile.ID == "grok" || profile.ID == "opencode" || profile.ID == "atomcode" || profile.ID == "kimi" {
 				return fmt.Errorf("custom ACP profile id %q is reserved for the built-in profile", profile.ID)
 			}
 		default:
@@ -530,7 +530,7 @@ func (c Config) EffectiveACPDefaultProfile() string {
 func legacyACPProfileKind(agent string) string {
 	agent = strings.ToLower(strings.TrimSpace(agent))
 	switch agent {
-	case "codex", "claude", "grok", "opencode", "atomcode":
+	case "codex", "claude", "grok", "opencode", "atomcode", "kimi":
 		return agent
 	default:
 		return "custom"

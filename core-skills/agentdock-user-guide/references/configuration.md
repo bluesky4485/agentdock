@@ -34,7 +34,7 @@
 | `AGENTDOCK_TRUSTED_PROXY_CIDRS` | 受信任反向代理网段 | 服务器/反代场景 |
 | `AGENTDOCK_INSTRUCTIONS_FILE` | 额外 Instructions 文件 | 高级启动配置 |
 
-Coding Agent 的发现、Codex / Claude Adapter 安装、Grok / OpenCode / AtomCode 原生 ACP 模式、平台配置和验证流程见 `acp.md`。
+Coding Agent 的发现、Codex / Claude Adapter 安装、Grok / OpenCode / AtomCode / Kimi 原生 ACP 模式、平台配置和验证流程见 `acp.md`。
 
 ## 重要边界
 

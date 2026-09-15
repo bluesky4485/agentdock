@@ -64,6 +64,11 @@ func resolveDesktopACPAdapter(agent, runtimeRoot, configuredCommand string, conf
 			executableNames: []string{"atomcode.exe", "atomcode.com"},
 			args:            []string{"acp"},
 		}
+	case "kimi":
+		preset = desktopACPAdapterPreset{
+			executableNames: []string{"kimi.exe", "kimi.com"},
+			args:            []string{"acp"},
+		}
 	default:
 		return desktopACPAdapter{}, fmt.Errorf("不支持的 Coding Agent: %s", agent)
 	}
@@ -143,6 +148,7 @@ func desktopACPSearchDirectories(runtimeRoot string) []string {
 			filepath.Join(userHome, ".local", "bin"),
 			filepath.Join(userHome, ".cargo", "bin"),
 			filepath.Join(userHome, ".opencode", "bin"),
+			filepath.Join(userHome, ".kimi-code"),
 		)
 	}
 	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
