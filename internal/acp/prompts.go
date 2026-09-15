@@ -284,6 +284,14 @@ func (m *Manager) CancelPrompt(_ context.Context, sessionID, runID string) error
 	run.eventsMu.Unlock()
 
 	if process != nil && record.RemoteSessionID != "" {
+		// session/cancel 必须晚于该 turn 的 session/prompt 写入 adapter，否则
+		// cancel 会先到达、被对无活跃 turn 的 adapter 静默丢弃，prompt 随后照常
+		// 开始一个新 turn，此后 close/load 恢复流程与之互相等待形成死锁。
+		select {
+		case <-run.requestWritten:
+		case <-run.finalized:
+		case <-time.After(5 * time.Second):
+		}
 		if err := process.connection.Notify("session/cancel", map[string]any{"sessionId": record.RemoteSessionID}); err != nil {
 			return process.wrapError("cancel ACP prompt", err)
 		}
@@ -439,10 +447,18 @@ func (m *Manager) runPrompt(ctx context.Context, run *Run, record SessionRecord,
 	var response struct {
 		StopReason string `json:"stopReason"`
 	}
-	err := process.connection.Request(ctx, "session/prompt", map[string]any{
+	reply, err := process.connection.sendRequest("session/prompt", map[string]any{
 		"sessionId": record.RemoteSessionID,
 		"prompt":    blocks,
-	}, &response)
+	})
+	if err != nil {
+		m.finishRun(run, RunFailed, "", process.wrapError("run ACP prompt", err))
+		return
+	}
+	// prompt 请求已上线上；此后同 session 的 cancel 才能保证被 adapter 在
+	// 活跃 turn 内看到（否则 cancel 会先于 prompt 到达并被静默丢弃）。
+	close(run.requestWritten)
+	err = process.connection.awaitReply(ctx, reply, &response)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			m.finishRun(run, RunCancelled, "cancelled", nil)
