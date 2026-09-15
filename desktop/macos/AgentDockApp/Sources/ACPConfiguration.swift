@@ -12,12 +12,13 @@ private struct ACPNodePackage {
     let binName: String
 }
 
-enum ACPAgentPreset: String, CaseIterable {
+enum ACPAgentPreset: String, CaseIterable, Codable {
     case codex
     case claude
     case grok
     case opencode
     case atomcode
+    case kimi
     case custom
 
     var title: String {
@@ -27,6 +28,7 @@ enum ACPAgentPreset: String, CaseIterable {
         case .grok: return "Grok Build"
         case .opencode: return "OpenCode"
         case .atomcode: return "AtomCode"
+        case .kimi: return "Kimi Code"
         case .custom: return L10n.text("Custom")
         }
     }
@@ -38,6 +40,7 @@ enum ACPAgentPreset: String, CaseIterable {
         case .grok: return ["grok"]
         case .opencode: return ["opencode"]
         case .atomcode: return ["atomcode"]
+        case .kimi: return ["kimi"]
         case .custom: return []
         }
     }
@@ -45,7 +48,7 @@ enum ACPAgentPreset: String, CaseIterable {
     var arguments: [String] {
         switch self {
         case .grok: return ["agent", "stdio"]
-        case .opencode, .atomcode: return ["acp"]
+        case .opencode, .atomcode, .kimi: return ["acp"]
         case .codex, .claude, .custom: return []
         }
     }
@@ -56,7 +59,7 @@ enum ACPAgentPreset: String, CaseIterable {
             return ACPNodePackage(name: "@agentclientprotocol/codex-acp", binName: "codex-acp")
         case .claude:
             return ACPNodePackage(name: "@agentclientprotocol/claude-agent-acp", binName: "claude-agent-acp")
-        case .grok, .opencode, .atomcode, .custom:
+        case .grok, .opencode, .atomcode, .kimi, .custom:
             return nil
         }
     }
@@ -238,6 +241,7 @@ enum ACPAgentPreset: String, CaseIterable {
             home.appendingPathComponent(".local/bin", isDirectory: true),
             home.appendingPathComponent(".cargo/bin", isDirectory: true),
             home.appendingPathComponent(".opencode/bin", isDirectory: true),
+            home.appendingPathComponent(".kimi-code", isDirectory: true),
             URL(fileURLWithPath: "/opt/homebrew/bin", isDirectory: true),
             URL(fileURLWithPath: "/usr/local/bin", isDirectory: true),
             URL(fileURLWithPath: "/usr/bin", isDirectory: true),
@@ -359,7 +363,46 @@ enum ACPAgentPreset: String, CaseIterable {
     }
 }
 
+struct ACPProfileConfiguration: Codable, Equatable {
+    var id: String
+    var displayName: String? = nil
+    var kind: ACPAgentPreset
+    var command: String
+    var args: [String]
+    var envFromEnv: [String: String]?
+    var enabled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
+        case kind
+        case command
+        case args
+        case envFromEnv = "env_from_env"
+        case enabled
+    }
+}
+
 struct ACPDesktopConfiguration {
+    static func encodeProfiles(_ profiles: [ACPProfileConfiguration]) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(profiles)
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw ValidationError(L10n.text("Unable to encode Coding Agent profiles."))
+        }
+        return value
+    }
+
+    static func decodeProfiles(_ raw: String?) throws -> [ACPProfileConfiguration] {
+        guard let raw,
+              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return []
+        }
+        let data = Data(raw.utf8)
+        return try JSONDecoder().decode([ACPProfileConfiguration].self, from: data)
+    }
+
     static func encodeArguments(_ arguments: [String]) throws -> String {
         let data = try JSONEncoder().encode(arguments)
         guard let value = String(data: data, encoding: .utf8) else {

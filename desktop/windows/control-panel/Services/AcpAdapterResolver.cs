@@ -49,6 +49,12 @@ internal static class AcpAdapterResolver
                 npmPackageSegments = null;
                 npmBinName = null;
                 break;
+            case "kimi":
+                executableNames = ["kimi.exe", "kimi.com"];
+                arguments = ["acp"];
+                npmPackageSegments = null;
+                npmBinName = null;
+                break;
             case "codex":
                 executableNames = ["codex-acp.exe", "codex-acp.com"];
                 arguments = [];
@@ -125,6 +131,7 @@ internal static class AcpAdapterResolver
             Path.Combine(userProfile, ".local", "bin"),
             Path.Combine(userProfile, ".cargo", "bin"),
             Path.Combine(userProfile, ".opencode", "bin"),
+            Path.Combine(userProfile, ".kimi-code"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Grok"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AtomCode"),
@@ -324,6 +331,7 @@ internal static class AcpAdapterResolver
         "grok" => "grok",
         "opencode" => "opencode",
         "atomcode" => "atomcode",
+        "kimi" => "kimi",
         "custom" => "custom",
         var unsupported => throw new ArgumentException(UiText.Format("UnsupportedCodingAgentValue", unsupported), nameof(value))
     };

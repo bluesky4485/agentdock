@@ -3,18 +3,27 @@
 package desktopruntime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows"
+)
+
+const (
+	quickTunnelProvisionAttemptTimeout = 35 * time.Second
+	// Quick Tunnel supervisor 会在 provisioning 失败后自动重试。启动命令的总预算必须覆盖
+	// 至少两次 provisioning、第一次退避，以及拿到公网地址后 Core 最坏一次完整重启，再留 10s 调度余量。
+	// ready 文件仍然最后写入，不能为了缩短等待而提前暴露尚未被 Core 采用的公网地址。
+	quickTunnelStartTimeout = 2*quickTunnelProvisionAttemptTimeout + tunnelRetryInitialDelay + windowsCoreStartTimeout + 10*time.Second
+	namedTunnelStartTimeout = 45 * time.Second
 )
 
 func platformLaunchTunnel(ctx context.Context, runtimeRoot string) error {
@@ -106,10 +115,10 @@ func platformLaunchTunnel(ctx context.Context, runtimeRoot string) error {
 }
 
 func runCloudflaredOnce(ctx context.Context, runtime tunnelRuntime, logs *processLogs) error {
-	logCursors := quickTunnelLogCursors{}
+	logCursors := tunnelLogCursors{}
 	var err error
 	if runtime.mode == "quick" {
-		logCursors, err = captureQuickTunnelLogCursors(runtime.files)
+		logCursors, err = captureTunnelLogCursors(runtime.files)
 		if err != nil {
 			return err
 		}
@@ -126,7 +135,7 @@ func runCloudflaredOnce(ctx context.Context, runtime tunnelRuntime, logs *proces
 	}
 
 	if runtime.mode == "quick" {
-		publicURL, readyErr := waitQuickTunnelURL(ctx, runtime, logCursors, 35*time.Second)
+		publicURL, readyErr := waitQuickTunnelURL(ctx, runtime, logCursors, quickTunnelProvisionAttemptTimeout)
 		if readyErr != nil {
 			_ = command.Process.Kill()
 			_ = command.Wait()
@@ -202,21 +211,21 @@ func platformTunnelAction(ctx context.Context, runtimeRoot, action string) error
 	}
 }
 
-type quickTunnelLogCursors struct {
-	stdout quickTunnelLogCursor
-	stderr quickTunnelLogCursor
+type tunnelLogCursors struct {
+	stdout tunnelLogCursor
+	stderr tunnelLogCursor
 }
 
-func captureQuickTunnelLogCursors(files tunnelFiles) (quickTunnelLogCursors, error) {
-	stdout, err := captureQuickTunnelLogCursor(files.stdoutLog)
+func captureTunnelLogCursors(files tunnelFiles) (tunnelLogCursors, error) {
+	stdout, err := captureTunnelLogCursor(files.stdoutLog)
 	if err != nil {
-		return quickTunnelLogCursors{}, fmt.Errorf("记录 cloudflared stdout 日志位置失败: %w", err)
+		return tunnelLogCursors{}, fmt.Errorf("记录 cloudflared stdout 日志位置失败: %w", err)
 	}
-	stderr, err := captureQuickTunnelLogCursor(files.stderrLog)
+	stderr, err := captureTunnelLogCursor(files.stderrLog)
 	if err != nil {
-		return quickTunnelLogCursors{}, fmt.Errorf("记录 cloudflared stderr 日志位置失败: %w", err)
+		return tunnelLogCursors{}, fmt.Errorf("记录 cloudflared stderr 日志位置失败: %w", err)
 	}
-	return quickTunnelLogCursors{stdout: stdout, stderr: stderr}, nil
+	return tunnelLogCursors{stdout: stdout, stderr: stderr}, nil
 }
 
 func startTunnel(ctx context.Context, runtime tunnelRuntime) error {
@@ -237,7 +246,7 @@ func startTunnel(ctx context.Context, runtime tunnelRuntime) error {
 	}
 	if running && supervisorPID != 0 {
 		if runtime.mode == "quick" {
-			return waitQuickTunnelReady(ctx, runtime, 45*time.Second)
+			return waitQuickTunnelReady(ctx, runtime, quickTunnelStartTimeout)
 		}
 		return nil
 	}
@@ -258,12 +267,20 @@ func startTunnel(ctx context.Context, runtime tunnelRuntime) error {
 		}
 	}
 
+	var namedLogCursors tunnelLogCursors
 	if runtime.mode == "quick" {
 		// 旧临时地址在新进程真正拿到 URL 前不能继续暴露为 ready。
 		if err := clearActivePublicURL(runtime.files); err != nil {
 			return err
 		}
 		if err := runtime.updateManifest("none", ""); err != nil {
+			return err
+		}
+	} else {
+		// Named Tunnel 不能只看 cloudflared 瞬时进程存在。无效 Token 会让 supervisor
+		// 不断拉起一个很快退出的进程；只接受本次启动后真正注册连接的日志证据。
+		namedLogCursors, err = captureTunnelLogCursors(runtime.files)
+		if err != nil {
 			return err
 		}
 	}
@@ -274,9 +291,9 @@ func startTunnel(ctx context.Context, runtime tunnelRuntime) error {
 		return err
 	}
 	if runtime.mode == "quick" {
-		return waitQuickTunnelReady(ctx, runtime, 45*time.Second)
+		return waitQuickTunnelReady(ctx, runtime, quickTunnelStartTimeout)
 	}
-	return nil
+	return waitNamedTunnelReady(ctx, runtime, namedLogCursors, namedTunnelStartTimeout)
 }
 
 func stopTunnel(ctx context.Context, runtime tunnelRuntime) error {
@@ -312,7 +329,10 @@ func regenerateQuickTunnel(ctx context.Context, runtime tunnelRuntime) error {
 func launchCloudflared(runtime tunnelRuntime) error {
 	// Windows 不能把轮转 writer 直接交给脱离父进程的 cloudflared；因此先启动一个
 	// 长驻的 AgentDock tunnel launch 监督进程，由它持有 cloudflared 并实时轮转日志。
-	command := exec.Command(runtime.manifest.AgentDockBinary, "tunnel", "launch", "--runtime-root", runtime.root)
+	// Installer trial 期间 stable shim 会拒绝未提交 generation，因此和 Core 启动一样，
+	// 直接绑定当前 active generation，避免 supervisor 在 commit 前绕回 shim 失败。
+	supervisorBinary := ActiveCoreBinary(runtime.root, runtime.manifest)
+	command := exec.Command(supervisorBinary, "tunnel", "launch", "--runtime-root", runtime.root)
 	command.Dir = runtime.root
 	command.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
@@ -327,23 +347,11 @@ func launchCloudflared(runtime tunnelRuntime) error {
 	return nil
 }
 
-// ensureIsolatedConfig 在运行目录写一个空 cloudflared 配置，用于 --config 隔离。
-// cloudflared 默认加载 %USERPROFILE%\.cloudflared\config.yml，其兜底 ingress
-// `- service: http_status:404` 会把隧道入站请求就地吞成 404。
-func ensureIsolatedConfig(root string) (string, error) {
-	path := filepath.Join(root, "cloudflared-isolated.yml")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		return "", fmt.Errorf("写入 cloudflared 隔离配置失败: %w", err)
-	}
-	return path, nil
-}
-
 func cloudflaredCommand(ctx context.Context, runtime tunnelRuntime) (*exec.Cmd, error) {
-	isolatedConfig, err := ensureIsolatedConfig(runtime.root)
+	arguments, err := prepareCloudflaredTunnelArgs(runtime.root)
 	if err != nil {
 		return nil, err
 	}
-	arguments := []string{"--config", isolatedConfig, "tunnel", "--no-autoupdate"}
 	environment := environmentWithout(os.Environ(), "TUNNEL_TOKEN")
 	if runtime.mode == "quick" {
 		arguments = append(arguments, "--url", fmt.Sprintf("http://127.0.0.1:%d", runtime.settings.Port))
@@ -397,6 +405,53 @@ func invalidateQuickTunnelAfterExit(ctx context.Context, runtime tunnelRuntime) 
 	return platformServiceAction(ctx, runtime.root, "restart")
 }
 
+const (
+	namedTunnelConnectedMarker    = "Registered tunnel connection"
+	namedTunnelInvalidTokenMarker = "Provided Tunnel token is not valid."
+)
+
+func waitNamedTunnelReady(ctx context.Context, runtime tunnelRuntime, cursors tunnelLogCursors, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	logs := []struct {
+		path   string
+		cursor tunnelLogCursor
+	}{
+		{path: runtime.files.stdoutLog, cursor: cursors.stdout},
+		{path: runtime.files.stderrLog, cursor: cursors.stderr},
+	}
+	for time.Now().Before(deadline) {
+		connected := false
+		for _, log := range logs {
+			data, err := readTunnelLogSince(log.path, log.cursor)
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+				continue
+			}
+			if bytes.Contains(data, []byte(namedTunnelInvalidTokenMarker)) {
+				return fmt.Errorf("Named Tunnel Token 无效: %s", tunnelLogSummary(runtime.files))
+			}
+			if bytes.Contains(data, []byte(namedTunnelConnectedMarker)) {
+				connected = true
+			}
+		}
+		running, err := processRunningAtPath(runtime.manifest.CloudflaredBinary)
+		if err != nil {
+			return err
+		}
+		if connected && running {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("Named Tunnel 未在 %s 内注册连接: %s", timeout, tunnelLogSummary(runtime.files))
+}
+
 func waitQuickTunnelReady(ctx context.Context, runtime tunnelRuntime, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -422,18 +477,18 @@ func waitQuickTunnelReady(ctx context.Context, runtime tunnelRuntime, timeout ti
 	return fmt.Errorf("Quick Tunnel 未在 %s 内进入 ready: %s", timeout, tunnelLogSummary(runtime.files))
 }
 
-func waitQuickTunnelURL(ctx context.Context, runtime tunnelRuntime, cursors quickTunnelLogCursors, timeout time.Duration) (string, error) {
+func waitQuickTunnelURL(ctx context.Context, runtime tunnelRuntime, cursors tunnelLogCursors, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	logs := []struct {
 		path   string
-		cursor quickTunnelLogCursor
+		cursor tunnelLogCursor
 	}{
 		{path: runtime.files.stdoutLog, cursor: cursors.stdout},
 		{path: runtime.files.stderrLog, cursor: cursors.stderr},
 	}
 	for time.Now().Before(deadline) {
 		for _, log := range logs {
-			data, err := readQuickTunnelLogSince(log.path, log.cursor)
+			data, err := readTunnelLogSince(log.path, log.cursor)
 			if err == nil {
 				if publicURL := findQuickTunnelURL(data); publicURL != "" {
 					return publicURL, nil

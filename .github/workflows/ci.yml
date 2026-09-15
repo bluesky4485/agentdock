@@ -13,16 +13,17 @@ jobs:
   go:
     name: Go check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -37,7 +38,7 @@ jobs:
           fi
 
       - name: Test
-        run: go test ./...
+        run: go test ./... -count=1 -timeout=3m
 
       - name: Check Windows test tree cleanliness
         if: runner.os == 'Windows'
@@ -49,9 +50,19 @@ jobs:
             exit 1
           fi
 
+      - name: ACP prompt and steering race regression
+        if: runner.os == 'Linux'
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          go test -race ./internal/acp \
+            -run 'Test(StartPromptWaitsForPromptDispatchBeforeSteering|ClaudeSteeringFallbackCancelsOldRunAndStartsObservableTurn|CodexSteeringFallbackCancelsOldRunAndStartsObservableTurn)$' \
+            -count=20 \
+            -timeout=90s
+
       - name: Race
         if: runner.os == 'Linux'
-        run: go test -race ./...
+        run: go test -race ./... -count=1 -timeout=3m
 
       - name: Vet
         run: go vet ./...
@@ -103,35 +114,41 @@ jobs:
   browser-integration:
     name: Native browser integration
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Install Xvfb
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb xauth
+          if command -v xvfb-run >/dev/null 2>&1 && command -v xauth >/dev/null 2>&1; then
+            exit 0
+          fi
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends xvfb xauth
 
       - name: Browser integration race
         shell: bash
         run: |
           browser_path="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium-browser || command -v chromium || true)"
           test -n "$browser_path"
-          xvfb-run -a env AGENTDOCK_BROWSER_EXECUTABLE_PATH="$browser_path" go test -race -tags browser_integration ./internal/tool/browser ./internal/app -count=1
+          xvfb-run -a env AGENTDOCK_BROWSER_EXECUTABLE_PATH="$browser_path" go test -race -tags browser_integration ./internal/tool/browser ./internal/app -count=1 -timeout=3m
 
 
   container:
     name: Container check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build and verify images
         run: ./scripts/test/test-docker-images.sh

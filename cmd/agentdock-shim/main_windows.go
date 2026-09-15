@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/uvwt/agentdock/internal/fs/processlock"
+	processctl "github.com/uvwt/agentdock/internal/process"
 	"github.com/uvwt/agentdock/internal/updateengine"
 )
 
@@ -63,12 +64,34 @@ func run() error {
 		command.Stdin = os.Stdin
 		command.Stdout = os.Stdout
 		command.Stderr = os.Stderr
-		if err := command.Run(); err != nil {
+
+		var runErr error
+		if coreLaunchRequiresParentLifetime(os.Args[1:]) {
+			// Scheduled Task owns the stable shim, not the generation Core. Keep the Core
+			// in a kill-on-close Job owned by this shim so ending the task cannot orphan it.
+			if err := command.Start(); err != nil {
+				return fmt.Errorf("start AgentDock active generation: %w", err)
+			}
+			controller, err := processctl.Attach(command)
+			if err != nil {
+				_ = command.Process.Kill()
+				_ = command.Wait()
+				return fmt.Errorf("supervise AgentDock active generation: %w", err)
+			}
+			runErr = command.Wait()
+			closeErr := controller.Close()
+			if runErr == nil && closeErr != nil {
+				return fmt.Errorf("release AgentDock active generation supervisor: %w", closeErr)
+			}
+		} else {
+			runErr = command.Run()
+		}
+		if runErr != nil {
 			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
+			if errors.As(runErr, &exitErr) {
 				os.Exit(exitErr.ExitCode())
 			}
-			return fmt.Errorf("run AgentDock active generation: %w", err)
+			return fmt.Errorf("run AgentDock active generation: %w", runErr)
 		}
 		return nil
 	}
@@ -80,6 +103,12 @@ func run() error {
 	return command.Process.Release()
 }
 
+func coreLaunchRequiresParentLifetime(args []string) bool {
+	return len(args) >= 2 &&
+		strings.EqualFold(strings.TrimSpace(args[0]), "service") &&
+		strings.EqualFold(strings.TrimSpace(args[1]), "launch-core")
+}
+
 func resolveActiveWithRecovery(root string, store *updateengine.Store, layout updateengine.WindowsLayout) (updateengine.ActiveVersion, error) {
 	active, err := store.ReadActive()
 	if err != nil {
@@ -89,7 +118,9 @@ func resolveActiveWithRecovery(root string, store *updateengine.Store, layout up
 	transaction, transactionErr := store.ReadTransaction()
 	if transactionErr != nil {
 		if active.State == updateengine.StateTrial {
-			return updateengine.ActiveVersion{}, fmt.Errorf("read interrupted update transaction: %w", transactionErr)
+			// Installer fresh bootstrap 把 pointer 停在 trial，直到 install commit。
+			// shim 恢复只认 update/transaction.json；没有这份 journal 就不能把未完成安装当 committed 启动。
+			return updateengine.ActiveVersion{}, fmt.Errorf("active generation is still a trial and no update transaction is present; refusing to launch an uncommitted installer generation: %w", transactionErr)
 		}
 		return active, nil
 	}
