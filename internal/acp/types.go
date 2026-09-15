@@ -161,9 +161,6 @@ type Run struct {
 	lastAssistantChunk    string
 	finalized             chan struct{}
 	finalizeOnce          sync.Once
-	// requestWritten 在 session/prompt 请求确实写入 adapter 流之后关闭。
-	// CancelPrompt 依赖它保证 session/cancel 不会抢在 prompt 之前到达 adapter。
-	requestWritten chan struct{}
 }
 
 func newRun(id, sessionID string) *Run {
@@ -171,7 +168,6 @@ func newRun(id, sessionID string) *Run {
 		ID: id, SessionID: sessionID, Status: RunRunning, StartedAt: time.Now().UTC(),
 		nextSeq: 1, notify: make(chan struct{}, 1), finalized: make(chan struct{}),
 		remoteErrorCandidates: make(map[string]string),
-		requestWritten:        make(chan struct{}),
 	}
 }
 

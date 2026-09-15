@@ -13,6 +13,9 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/windows-installer.yml'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       test_tag:
@@ -24,21 +27,66 @@ permissions:
   contents: write
 
 jobs:
-  validate:
-    name: Validate installer on Windows PowerShell 5.1
-    runs-on: windows-latest
+  changes:
+    name: Detect Windows installer changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether installer validation is required
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo 'relevant=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed_paths="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
+            scripts \
+            packaging \
+            desktop/windows \
+            cmd \
+            internal \
+            go.mod \
+            go.sum \
+            .github/workflows/windows-installer.yml)"
+          if [[ -n "$changed_paths" ]]; then
+            printf 'Windows installer validation required by:\n%s\n' "$changed_paths"
+            echo 'relevant=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'No Windows installer-relevant changes detected.'
+            echo 'relevant=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  validate:
+    name: Validate installer on Windows PowerShell 5.1
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
 
@@ -52,27 +100,20 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $runtimeTestAgentDockBinary = Join-Path $env:RUNNER_TEMP 'agentdock-runtime-launch-test.exe'
+          $env:CGO_ENABLED = '0'
+          $env:GOOS = 'windows'
+          $env:GOARCH = 'amd64'
+          go build -trimpath -o $runtimeTestAgentDockBinary .\cmd\agentdock
           & .\scripts\test\test-windows-runtime-launch-diagnostics.ps1 `
-            -LauncherPath .\scripts\install\launch-windows-process.ps1
+            -LauncherPath .\scripts\install\launch-windows-process.ps1 `
+            -AgentDockBinary $runtimeTestAgentDockBinary
 
       - name: Test Task Scheduler session selection
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          & .\scripts\test\test-windows-task-scheduler.ps1 `
-            -ManagerPath .\scripts\install\manage-windows.ps1
-
-      - name: Download and validate exact installer bytes
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $downloadedInstaller = Join-Path $env:RUNNER_TEMP 'install-downloaded.ps1'
-          $installerUrl = 'https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/scripts/install/install.ps1'
-          & .\scripts\test\test-install-windows-download.ps1 `
-            -Url $installerUrl `
-            -ExpectedInstallerPath .\scripts\install\install.ps1 `
-            -OutputPath $downloadedInstaller
-          "DOWNLOADED_INSTALLER=$downloadedInstaller" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          go test ./internal/desktopruntime -run TestSelectInteractiveTaskSessionID -count=1
 
       - name: Run full install and in-place upgrade as standard user
         shell: powershell
@@ -98,14 +139,13 @@ jobs:
             -o $controlPanelOutput
           Copy-Item (Join-Path $controlPanelOutput 'agentdock-tray.exe') (Join-Path $distRoot 'agentdock-tray.exe') -Force
           Copy-Item .\packaging\windows\assets\agentdock.ico (Join-Path $distRoot 'agentdock.ico') -Force
-          Copy-Item .\scripts\install\manage-windows.ps1 (Join-Path $distRoot 'manage-windows.ps1') -Force
           python .\packaging\build-core-skill-bundle.py --output $bundleRoot
           & .\packaging\windows\build-wsl-helper-payload.ps1 -OutputDirectory (Join-Path $distRoot 'wsl-helper')
 
           $assetName = 'agentdock_windows_amd64.zip'
           $archivePath = Join-Path $releaseRoot $assetName
           Compress-Archive `
-            -Path (Join-Path $distRoot 'agentdock.exe'), (Join-Path $distRoot 'agentdock-tray.exe'), (Join-Path $distRoot 'agentdock-arbiter.exe'), (Join-Path $distRoot 'agentdock-shim.exe'), (Join-Path $distRoot 'agentdock-tray-shim.exe'), (Join-Path $distRoot 'agentdock.ico'), (Join-Path $distRoot 'manage-windows.ps1'), (Join-Path $distRoot 'share'), (Join-Path $distRoot 'wsl-helper') `
+            -Path (Join-Path $distRoot 'agentdock.exe'), (Join-Path $distRoot 'agentdock-tray.exe'), (Join-Path $distRoot 'agentdock-arbiter.exe'), (Join-Path $distRoot 'agentdock-shim.exe'), (Join-Path $distRoot 'agentdock-tray-shim.exe'), (Join-Path $distRoot 'agentdock.ico'), (Join-Path $distRoot 'share'), (Join-Path $distRoot 'wsl-helper') `
             -DestinationPath $archivePath `
             -Force
           $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -138,7 +178,7 @@ jobs:
             } while ($true)
 
             & .\scripts\test\run-windows-installer-e2e-as-standard-user.ps1 `
-              -InstallerPath $env:DOWNLOADED_INSTALLER `
+              -InstallerPath .\scripts\install\install.ps1 `
               -Version latest `
               -ReleaseBaseUrl $releaseBaseUrl
           } finally {
@@ -163,7 +203,6 @@ jobs:
             --self-contained true `
             -o dist\control-panel
           Copy-Item .\dist\control-panel\agentdock-tray.exe .\dist\agentdock-tray.exe -Force
-          Copy-Item .\scripts\install\manage-windows.ps1 .\dist\manage-windows.ps1 -Force
           & .\packaging\windows\build-wsl-helper-payload.ps1 -OutputDirectory .\dist\wsl-helper
 
       - name: Test configured Authenticode certificate
@@ -204,25 +243,36 @@ jobs:
           Copy-Item .\packaging\windows\assets\agentdock.ico .\dist\agentdock.ico -Force
           $archivePath = Join-Path $payloadRoot 'agentdock_windows_amd64.zip'
           Compress-Archive `
-            -Path .\dist\agentdock.exe, .\dist\agentdock-tray.exe, .\dist\agentdock-arbiter.exe, .\dist\agentdock-shim.exe, .\dist\agentdock-tray-shim.exe, .\dist\agentdock.ico, .\dist\manage-windows.ps1, .\dist\share, .\dist\wsl-helper `
+            -Path .\dist\agentdock.exe, .\dist\agentdock-tray.exe, .\dist\agentdock-arbiter.exe, .\dist\agentdock-shim.exe, .\dist\agentdock-tray-shim.exe, .\dist\agentdock.ico, .\dist\share, .\dist\wsl-helper `
             -DestinationPath $archivePath `
             -Force
           $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
           $checksumPath = "$archivePath.sha256"
           [IO.File]::WriteAllText($checksumPath, "$hash  agentdock_windows_amd64.zip`n", [Text.UTF8Encoding]::new($false))
 
-          $cloudflaredPath = Join-Path $payloadRoot 'cloudflared-windows-amd64.exe'
-          Invoke-WebRequest `
-            -UseBasicParsing `
-            -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' `
-            -OutFile $cloudflaredPath
+          "AMD64_ARCHIVE=$archivePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          "AMD64_CHECKSUM=$checksumPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+
+      - name: Download and verify cloudflared compatibility payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $cloudflaredPath = Join-Path $env:RUNNER_TEMP 'cloudflared-windows-amd64.exe'
+          $cloudflaredUrl = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+              Invoke-WebRequest -UseBasicParsing -Uri $cloudflaredUrl -OutFile $cloudflaredPath
+              break
+            } catch {
+              if ($attempt -eq 5) { throw }
+              Start-Sleep -Seconds 2
+            }
+          }
           $cloudflaredSignature = Get-AuthenticodeSignature -LiteralPath $cloudflaredPath
           if ($cloudflaredSignature.Status -ne [Management.Automation.SignatureStatus]::Valid) {
             throw "cloudflared Authenticode signature is invalid: $($cloudflaredSignature.StatusMessage)"
           }
-
-          "AMD64_ARCHIVE=$archivePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
-          "AMD64_CHECKSUM=$checksumPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
           "AMD64_CLOUDFLARED=$cloudflaredPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
       - name: Test Quick Tunnel restart lifecycle
@@ -239,6 +289,59 @@ jobs:
             -UninstallerPath .\scripts\install\uninstall-windows.ps1 `
             -AgentDockArchive $env:AMD64_ARCHIVE `
             -AgentDockChecksumFile $env:AMD64_CHECKSUM `
+            -FakeCloudflaredBinary $fakeCloudflared
+
+      - name: Test Named Tunnel install update and rollback lifecycle
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CGO_ENABLED = '0'
+          $env:GOOS = 'windows'
+          $env:GOARCH = 'amd64'
+
+          $fakeCloudflared = Join-Path $env:RUNNER_TEMP 'fake-cloudflared-named.exe'
+          go build -trimpath -o $fakeCloudflared .\scripts\test\testdata\fake-cloudflared
+
+          function Build-VersionedAgentDock {
+            param([string] $Version, [string] $OutputPath)
+
+            $sourcePath = (Resolve-Path '.\internal\buildinfo\buildinfo.go').Path
+            $source = Get-Content -LiteralPath $sourcePath -Raw
+            $replacement = [regex]::Replace(
+              $source,
+              'const Version = "[^"]+"',
+              "const Version = `"$Version`"",
+              1
+            )
+            if ($replacement -eq $source) {
+              throw 'Could not replace buildinfo.Version for Named Tunnel E2E.'
+            }
+
+            $replacementPath = Join-Path $env:RUNNER_TEMP "buildinfo-$Version.go"
+            $overlayPath = Join-Path $env:RUNNER_TEMP "buildinfo-$Version-overlay.json"
+            [IO.File]::WriteAllText($replacementPath, $replacement, [Text.UTF8Encoding]::new($false))
+            $replacements = @{}
+            $replacements[$sourcePath] = $replacementPath
+            [IO.File]::WriteAllText(
+              $overlayPath,
+              (@{ Replace = $replacements } | ConvertTo-Json -Depth 4),
+              [Text.UTF8Encoding]::new($false)
+            )
+            go build -trimpath -overlay $overlayPath -o $OutputPath .\cmd\agentdock
+          }
+
+          $sourceCore = Join-Path $env:RUNNER_TEMP 'agentdock-named-source.exe'
+          $trialCore = Join-Path $env:RUNNER_TEMP 'agentdock-named-trial.exe'
+          Build-VersionedAgentDock -Version '0.0.0-named-source-e2e' -OutputPath $sourceCore
+          Build-VersionedAgentDock -Version '999.0.0-named-trial-e2e' -OutputPath $trialCore
+
+          & .\scripts\test\test-windows-named-tunnel-lifecycle.ps1 `
+            -InstallerPath .\scripts\install\install.ps1 `
+            -UninstallerPath .\scripts\install\uninstall-windows.ps1 `
+            -TargetAgentDockArchive $env:AMD64_ARCHIVE `
+            -TargetAgentDockChecksumFile $env:AMD64_CHECKSUM `
+            -SourceCoreBinary $sourceCore `
+            -TrialCoreBinary $trialCore `
             -FakeCloudflaredBinary $fakeCloudflared
 
       - name: Test Setup activation deferral
@@ -289,6 +392,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & .\scripts\test\test-windows-setup-e2e.ps1 `
             -SetupPath (Join-Path $env:RUNNER_TEMP 'agentdock-setup\AgentDockSetup-amd64.exe') `
+            -LegacyCorePath .\dist\agentdock.exe `
+            -LegacyTrayPath .\dist\agentdock-tray.exe `
             -AllowLegacyTaskMutation
 
       - name: Smoke test current binary as standard user
@@ -300,7 +405,7 @@ jobs:
 
 
       - name: Build and publish signed Windows test package
-        if: ${{ inputs.test_tag != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_tag != '' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -323,7 +428,7 @@ jobs:
             $assetName = "agentdock_windows_$Architecture.zip"
             $assetPath = Join-Path $releaseDir $assetName
             Compress-Archive `
-              -Path (Join-Path $SourceDirectory 'agentdock.exe'), (Join-Path $SourceDirectory 'agentdock-tray.exe'), (Join-Path $SourceDirectory 'agentdock-arbiter.exe'), (Join-Path $SourceDirectory 'agentdock-shim.exe'), (Join-Path $SourceDirectory 'agentdock-tray-shim.exe'), (Join-Path $SourceDirectory 'agentdock.ico'), (Join-Path $SourceDirectory 'manage-windows.ps1'), (Join-Path $SourceDirectory 'share'), (Join-Path $SourceDirectory 'wsl-helper') `
+              -Path (Join-Path $SourceDirectory 'agentdock.exe'), (Join-Path $SourceDirectory 'agentdock-tray.exe'), (Join-Path $SourceDirectory 'agentdock-arbiter.exe'), (Join-Path $SourceDirectory 'agentdock-shim.exe'), (Join-Path $SourceDirectory 'agentdock-tray-shim.exe'), (Join-Path $SourceDirectory 'agentdock.ico'), (Join-Path $SourceDirectory 'share'), (Join-Path $SourceDirectory 'wsl-helper') `
               -DestinationPath $assetPath `
               -Force
             $hash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -346,7 +451,6 @@ jobs:
             --self-contained true `
             -o $arm64ControlPanelOutput
           Copy-Item (Join-Path $arm64ControlPanelOutput 'agentdock-tray.exe') (Join-Path $arm64Dir 'agentdock-tray.exe') -Force
-          Copy-Item .\scripts\install\manage-windows.ps1 (Join-Path $arm64Dir 'manage-windows.ps1') -Force
           .\packaging\windows\sign-windows.ps1 -Path @(
             (Join-Path $arm64Dir 'agentdock.exe'),
             (Join-Path $arm64Dir 'agentdock-tray.exe'),
@@ -389,3 +493,35 @@ jobs:
             --prerelease `
             --title "AgentDock Windows test $env:TEST_TAG" `
             --notes "Temporary Windows test build from commit $env:GITHUB_SHA. Uses the existing AgentDock self-signed Authenticode certificate."
+
+  gate:
+    name: Windows Installer gate
+    needs: [changes, validate]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify installer validation result
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RELEVANT: ${{ needs.changes.outputs.relevant }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+        run: |
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "Windows installer change detection failed: $CHANGES_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$RELEVANT" == "true" ]]; then
+            if [[ "$VALIDATE_RESULT" != "success" ]]; then
+              echo "Windows installer validation did not pass: $VALIDATE_RESULT" >&2
+              exit 1
+            fi
+            echo 'Windows installer-relevant changes passed full validation.'
+            exit 0
+          fi
+          if [[ "$VALIDATE_RESULT" != "skipped" ]]; then
+            echo "Unexpected Windows installer validation result for an unrelated change: $VALIDATE_RESULT" >&2
+            exit 1
+          fi
+          echo 'Windows installer validation not required for this change.'

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -148,7 +149,14 @@ func (m *Manager) StartPromptBlocks(ctx context.Context, sessionID string, block
 		m.finishRun(run, RunFailed, "", err)
 		return PromptStartResult{}, err
 	}
-	go m.runPrompt(runCtx, run, record, blocks)
+	// StartPrompt 返回 started 后，调用方可能立即 Cancel/Steer。必须先保证
+	// session/prompt 已写入 ACP 连接，否则 cancel notification 可能抢在 prompt
+	// 前面到达 Adapter，被当成“当前没有 turn”直接消费，随后原 prompt 永久等待。
+	dispatched := make(chan struct{})
+	var dispatchOnce sync.Once
+	markDispatched := func() { dispatchOnce.Do(func() { close(dispatched) }) }
+	go m.runPrompt(runCtx, run, record, blocks, markDispatched)
+	<-dispatched
 	return PromptStartResult{RunID: run.ID, SessionID: sessionID, Status: RunRunning, Disposition: "started", StartedAt: run.StartedAt}, nil
 }
 
@@ -284,14 +292,6 @@ func (m *Manager) CancelPrompt(_ context.Context, sessionID, runID string) error
 	run.eventsMu.Unlock()
 
 	if process != nil && record.RemoteSessionID != "" {
-		// session/cancel 必须晚于该 turn 的 session/prompt 写入 adapter，否则
-		// cancel 会先到达、被对无活跃 turn 的 adapter 静默丢弃，prompt 随后照常
-		// 开始一个新 turn，此后 close/load 恢复流程与之互相等待形成死锁。
-		select {
-		case <-run.requestWritten:
-		case <-run.finalized:
-		case <-time.After(5 * time.Second):
-		}
 		if err := process.connection.Notify("session/cancel", map[string]any{"sessionId": record.RemoteSessionID}); err != nil {
 			return process.wrapError("cancel ACP prompt", err)
 		}
@@ -436,7 +436,8 @@ func (m *Manager) markSessionInterrupted(record SessionRecord, reason string) {
 	}
 }
 
-func (m *Manager) runPrompt(ctx context.Context, run *Run, record SessionRecord, blocks []ContentBlock) {
+func (m *Manager) runPrompt(ctx context.Context, run *Run, record SessionRecord, blocks []ContentBlock, markDispatched func()) {
+	defer markDispatched()
 	m.mu.RLock()
 	process := m.process
 	m.mu.RUnlock()
@@ -447,18 +448,10 @@ func (m *Manager) runPrompt(ctx context.Context, run *Run, record SessionRecord,
 	var response struct {
 		StopReason string `json:"stopReason"`
 	}
-	reply, err := process.connection.sendRequest("session/prompt", map[string]any{
+	err := process.connection.request(ctx, "session/prompt", map[string]any{
 		"sessionId": record.RemoteSessionID,
 		"prompt":    blocks,
-	})
-	if err != nil {
-		m.finishRun(run, RunFailed, "", process.wrapError("run ACP prompt", err))
-		return
-	}
-	// prompt 请求已上线上；此后同 session 的 cancel 才能保证被 adapter 在
-	// 活跃 turn 内看到（否则 cancel 会先于 prompt 到达并被静默丢弃）。
-	close(run.requestWritten)
-	err = process.connection.awaitReply(ctx, reply, &response)
+	}, &response, markDispatched)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			m.finishRun(run, RunCancelled, "cancelled", nil)

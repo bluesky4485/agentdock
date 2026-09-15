@@ -33,15 +33,6 @@ type rpcResponse struct {
 	err    error
 }
 
-// pendingReply tracks an in-flight request whose message has already been
-// written to the stream.
-type pendingReply struct {
-	key      string
-	id       uint64
-	method   string
-	response chan rpcResponse
-}
-
 type RequestHandler func(context.Context, string, json.RawMessage) (any, *rpcError)
 type NotificationHandler func(string, json.RawMessage)
 
@@ -80,19 +71,12 @@ func NewConnection(reader io.ReadCloser, writer io.WriteCloser, requestHandler R
 }
 
 func (c *Connection) Request(ctx context.Context, method string, params any, result any) error {
-	reply, err := c.sendRequest(method, params)
-	if err != nil {
-		return err
-	}
-	return c.awaitReply(ctx, reply, result)
+	return c.request(ctx, method, params, result, nil)
 }
 
-// sendRequest registers and writes a JSON-RPC request. When it returns nil the
-// message has been written to the stream, so any notification sent afterwards
-// is guaranteed to reach the adapter after this request.
-func (c *Connection) sendRequest(method string, params any) (*pendingReply, error) {
+func (c *Connection) request(ctx context.Context, method string, params any, result any, dispatched func()) error {
 	if c == nil {
-		return nil, errors.New("ACP connection is nil")
+		return errors.New("ACP connection is nil")
 	}
 	id := c.nextID.Add(1)
 	idRaw := json.RawMessage(strconv.FormatUint(id, 10))
@@ -100,14 +84,14 @@ func (c *Connection) sendRequest(method string, params any) (*pendingReply, erro
 	response := make(chan rpcResponse, 1)
 	paramsRaw, err := marshalRaw(params)
 	if err != nil {
-		return nil, newError("ACP_PROTOCOL_ERROR", "encode ACP request parameters", false, map[string]any{"method": method}, err)
+		return newError("ACP_PROTOCOL_ERROR", "encode ACP request parameters", false, map[string]any{"method": method}, err)
 	}
 
 	c.pendingMu.Lock()
 	select {
 	case <-c.closed:
 		c.pendingMu.Unlock()
-		return nil, newError("ACP_CONNECTION_CLOSED", "ACP connection is closed", true, nil, c.closeErr)
+		return newError("ACP_CONNECTION_CLOSED", "ACP connection is closed", true, nil, c.closeErr)
 	default:
 	}
 	c.pending[key] = response
@@ -120,31 +104,31 @@ func (c *Connection) sendRequest(method string, params any) (*pendingReply, erro
 		Params:  paramsRaw,
 	}); err != nil {
 		c.removePending(key)
-		return nil, err
+		return err
 	}
-	return &pendingReply{key: key, id: id, method: method, response: response}, nil
-}
+	if dispatched != nil {
+		dispatched()
+	}
 
-func (c *Connection) awaitReply(ctx context.Context, reply *pendingReply, result any) error {
 	select {
-	case msg := <-reply.response:
-		if msg.err != nil {
-			return msg.err
+	case reply := <-response:
+		if reply.err != nil {
+			return reply.err
 		}
-		if result == nil || len(msg.result) == 0 || string(msg.result) == "null" {
+		if result == nil || len(reply.result) == 0 || string(reply.result) == "null" {
 			return nil
 		}
-		if err := json.Unmarshal(msg.result, result); err != nil {
-			return newError("ACP_INVALID_RESPONSE", "decode ACP response", false, map[string]any{"method": reply.method}, err)
+		if err := json.Unmarshal(reply.result, result); err != nil {
+			return newError("ACP_INVALID_RESPONSE", "decode ACP response", false, map[string]any{"method": method}, err)
 		}
 		return nil
 	case <-ctx.Done():
-		c.removePending(reply.key)
-		_ = c.Notify("$/cancel_request", map[string]any{"requestId": reply.id})
-		return newError("ACP_REQUEST_CANCELLED", "ACP request was cancelled", true, map[string]any{"method": reply.method}, ctx.Err())
+		c.removePending(key)
+		_ = c.Notify("$/cancel_request", map[string]any{"requestId": id})
+		return newError("ACP_REQUEST_CANCELLED", "ACP request was cancelled", true, map[string]any{"method": method}, ctx.Err())
 	case <-c.closed:
-		c.removePending(reply.key)
-		return newError("ACP_CONNECTION_CLOSED", "ACP connection closed while waiting for a response", true, map[string]any{"method": reply.method}, c.closeErr)
+		c.removePending(key)
+		return newError("ACP_CONNECTION_CLOSED", "ACP connection closed while waiting for a response", true, map[string]any{"method": method}, c.closeErr)
 	}
 }
 

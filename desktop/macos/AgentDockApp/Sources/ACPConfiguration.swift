@@ -365,6 +365,7 @@ enum ACPAgentPreset: String, CaseIterable, Codable {
 
 struct ACPProfileConfiguration: Codable, Equatable {
     var id: String
+    var displayName: String? = nil
     var kind: ACPAgentPreset
     var command: String
     var args: [String]
@@ -373,6 +374,7 @@ struct ACPProfileConfiguration: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id
+        case displayName = "display_name"
         case kind
         case command
         case args
