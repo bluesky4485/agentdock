@@ -61,6 +61,22 @@ $resolvedPaths = @($Path | ForEach-Object {
 })
 $expectedCertificate = Get-ExpectedSigningCertificate
 
+# 未配置证书时，VerifyOnly 只确认"文件存在且刻意未签名"，直接通过；
+# 签名路径仍然必须报错，避免把未签名产物误当成已签名发布。
+if (-not $expectedCertificate -and $VerifyOnly) {
+    foreach ($item in $resolvedPaths) {
+        if (-not (Test-Path -LiteralPath $item -PathType Leaf)) {
+            throw "Artifact to verify is missing: $item"
+        }
+        $signature = Get-AuthenticodeSignature -LiteralPath $item
+        if ($signature.SignerCertificate) {
+            throw "WINDOWS_SIGNING_CERT_BASE64 is not configured, but $item already carries an Authenticode signature."
+        }
+        Write-Host "Skipping Authenticode verification for $item: no signing certificate configured (unsigned release build)."
+    }
+    exit 0
+}
+
 try {
     if (-not $VerifyOnly) {
         if (-not $expectedCertificate) {
