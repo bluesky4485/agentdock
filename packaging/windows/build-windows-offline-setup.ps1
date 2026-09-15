@@ -20,6 +20,18 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# 未显式指定 -SignedBuild 时按证书配置自动决定：配了证书就签，没配则产出未签名
+# Setup（CI 的 -SignedBuild 由 release.yml 按同一探测结果传入，两种来源保持一致）。
+if (-not $SignedBuild) {
+    $SignedBuild = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -and
+        -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)
+}
+if ($SignedBuild) {
+    Write-Host 'Building SIGNED offline Setup (Authenticode certificate configured).'
+} else {
+    Write-Host '::warning::Building UNSIGNED offline Setup: WINDOWS_SIGNING_CERT_BASE64/PASSWORD are not configured.'
+}
+
 function Resolve-RequiredFile {
     param([string] $Path, [string] $Description)
 

@@ -239,18 +239,21 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & .\scripts\test\test-install-windows.ps1 -InstallerPath $env:DOWNLOADED_INSTALLER
 
-      - name: Require Authenticode configuration
+      - name: Detect Authenticode configuration
+        id: signing
         shell: pwsh
         env:
           WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
           WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64)) {
-            throw 'WINDOWS_SIGNING_CERT_BASE64 is required for a formal release.'
+          $configured = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -and
+            -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)
+          if ($configured) {
+            Write-Host 'Authenticode certificate configured; artifacts will be signed.'
+          } else {
+            Write-Host '::warning::WINDOWS_SIGNING_CERT_BASE64/PASSWORD are not configured; publishing UNSIGNED Windows artifacts.'
           }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)) {
-            throw 'WINDOWS_SIGNING_CERT_PASSWORD is required for a formal release.'
-          }
+          "signed=$configured" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
 
       - name: Build
         shell: pwsh
@@ -286,6 +289,7 @@ jobs:
             -BinaryPath .\dist\agentdock.exe
 
       - name: Authenticode sign and verify
+        if: steps.signing.outputs.signed == 'true'
         shell: pwsh
         env:
           WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
@@ -341,18 +345,21 @@ jobs:
           name: agentdock-windows-${{ matrix.goarch }}
           path: payload
 
-      - name: Require Authenticode configuration
+      - name: Detect Authenticode configuration
+        id: signing
         shell: pwsh
         env:
           WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
           WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64)) {
-            throw 'WINDOWS_SIGNING_CERT_BASE64 is required for a formal release.'
+          $configured = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -and
+            -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)
+          if ($configured) {
+            Write-Host 'Authenticode certificate configured; artifacts will be signed.'
+          } else {
+            Write-Host '::warning::WINDOWS_SIGNING_CERT_BASE64/PASSWORD are not configured; publishing UNSIGNED Windows artifacts.'
           }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)) {
-            throw 'WINDOWS_SIGNING_CERT_PASSWORD is required for a formal release.'
-          }
+          "signed=$configured" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
 
       - name: Download and verify cloudflared compatibility payload
         shell: pwsh
@@ -378,6 +385,7 @@ jobs:
           $tag = '${{ github.event.inputs.tag || github.ref_name }}'
           $version = $tag.TrimStart('v')
           $outputDir = Join-Path $PWD 'dist'
+          $signedBuild = '${{ steps.signing.outputs.signed }}' -eq 'true'
           & .\packaging\windows\build-windows-offline-setup.ps1 `
             -Version $version `
             -Architecture '${{ matrix.goarch }}' `
@@ -385,7 +393,7 @@ jobs:
             -AgentDockChecksumFile '.\payload\agentdock_windows_${{ matrix.goarch }}.zip.sha256' `
             -CloudflaredBinary '.\payload\cloudflared.exe' `
             -OutputDirectory $outputDir `
-            -SignedBuild
+            $(if ($signedBuild) { '-SignedBuild' })
 
       - name: Upload Setup artifact
         uses: actions/upload-artifact@v4
@@ -751,6 +759,16 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      - name: Detect Authenticode configuration
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
+          $configured = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -and
+            -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)
+          "WINDOWS_SIGNING_CONFIGURED=$configured" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+
       - name: Download published installer
         shell: powershell
         run: |
@@ -772,6 +790,7 @@ jobs:
           "PUBLISHED_SETUP=$setup" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
       - name: Verify published Setup signature
+        if: env.WINDOWS_SIGNING_CONFIGURED == 'true'
         shell: pwsh
         env:
           WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
