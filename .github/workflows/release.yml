@@ -386,14 +386,20 @@ jobs:
           $version = $tag.TrimStart('v')
           $outputDir = Join-Path $PWD 'dist'
           $signedBuild = '${{ steps.signing.outputs.signed }}' -eq 'true'
-          & .\packaging\windows\build-windows-offline-setup.ps1 `
-            -Version $version `
-            -Architecture '${{ matrix.goarch }}' `
-            -AgentDockArchive '.\payload\agentdock_windows_${{ matrix.goarch }}.zip' `
-            -AgentDockChecksumFile '.\payload\agentdock_windows_${{ matrix.goarch }}.zip.sha256' `
-            -CloudflaredBinary '.\payload\cloudflared.exe' `
-            -OutputDirectory $outputDir `
-            $(if ($signedBuild) { '-SignedBuild' })
+          # 哈希表 splatting 条件传参。不要用内联 $(if ...)：pwsh 7 下条件为假时
+          # 返回 $null 并被当作多余的位置参数，报 "A positional parameter cannot
+          # be found that accepts argument '$null'"（PowerShell 5.1 会丢弃空子表达式，
+          # 所以本地 5.1 无法复现 CI 的失败）。
+          $setupArguments = @{
+            Version               = $version
+            Architecture          = '${{ matrix.goarch }}'
+            AgentDockArchive      = '.\payload\agentdock_windows_${{ matrix.goarch }}.zip'
+            AgentDockChecksumFile = '.\payload\agentdock_windows_${{ matrix.goarch }}.zip.sha256'
+            CloudflaredBinary     = '.\payload\cloudflared.exe'
+            OutputDirectory       = $outputDir
+          }
+          if ($signedBuild) { $setupArguments['SignedBuild'] = $true }
+          & .\packaging\windows\build-windows-offline-setup.ps1 @setupArguments
 
       - name: Upload Setup artifact
         uses: actions/upload-artifact@v4
