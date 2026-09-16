@@ -554,7 +554,7 @@ jobs:
         with:
           images: |
             ghcr.io/${{ github.repository }}
-            agentdockio/agentdock
+            kolehank/agentdock
           flavor: latest=false
           tags: |
             type=raw,value=${{ matrix.tag_prefix }}${{ github.event.inputs.tag || github.ref_name }},priority=1000
@@ -857,8 +857,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
           AGENTDOCK_TEST_BUILD: "false"
-          AGENTDOCK_TEST_RUNTIME_IMAGE: agentdockio/agentdock:${{ github.event.inputs.tag || github.ref_name }}
-          AGENTDOCK_TEST_DEV_IMAGE: agentdockio/agentdock:dev-${{ github.event.inputs.tag || github.ref_name }}
-          AGENTDOCK_TEST_BROWSER_IMAGE: agentdockio/agentdock:browser-${{ github.event.inputs.tag || github.ref_name }}
+          AGENTDOCK_TEST_RUNTIME_IMAGE: kolehank/agentdock:${{ github.event.inputs.tag || github.ref_name }}
+          AGENTDOCK_TEST_DEV_IMAGE: kolehank/agentdock:dev-${{ github.event.inputs.tag || github.ref_name }}
+          AGENTDOCK_TEST_BROWSER_IMAGE: kolehank/agentdock:browser-${{ github.event.inputs.tag || github.ref_name }}
           AGENTDOCK_EXPECT_IMAGE_VERSION: ${{ github.event.inputs.tag || github.ref_name }}
         run: ./scripts/test/test-docker-images.sh
