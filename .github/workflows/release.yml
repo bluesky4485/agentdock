@@ -804,12 +804,28 @@ jobs:
         run: |
           .\packaging\windows\sign-windows.ps1 -Path $env:PUBLISHED_SETUP -VerifyOnly
 
+      - name: Build legacy migration fixture
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # test-windows-setup-e2e.ps1 要求一对"旧版本"二进制做 legacy 迁移夹具；
+          # windows-installer.yml 在构建后运行所以有 dist 产物，这里只做验证，
+          # 用当前源码现编一份等价夹具。
+          New-Item -ItemType Directory -Path .\dist -Force | Out-Null
+          go build -trimpath -ldflags '-s -w' -o .\dist\agentdock.exe ./cmd/agentdock
+          go build -trimpath -ldflags '-s -w' -o .\dist\agentdock-tray.exe ./cmd/agentdock-shim
+
       - name: Install and uninstall published Setup
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           & .\scripts\test\test-windows-setup-e2e.ps1 `
             -SetupPath $env:PUBLISHED_SETUP `
+            -LegacyCorePath .\dist\agentdock.exe `
+            -LegacyTrayPath .\dist\agentdock-tray.exe `
             -AllowLegacyTaskMutation
 
       - name: Install and upgrade published version as standard user
