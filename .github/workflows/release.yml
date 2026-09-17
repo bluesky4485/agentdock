@@ -459,6 +459,17 @@ jobs:
           if default_base not in installer_text:
               raise SystemExit("install.sh default release base was not found")
           installer_entry.write_text(installer_text.replace(default_base, release_base, 1))
+
+          # install.ps1 的版本化安装与 latest 升级路径都硬编码上游仓库；fork 发布的
+          # 安装脚本必须指向自己仓库的 release，否则用户端与发布验证都会 404。
+          powershell_entry = Path("dist/install.ps1")
+          powershell_text = powershell_entry.read_text()
+          powershell_default_base = "https://github.com/uvwt/agentdock/releases"
+          if powershell_default_base not in powershell_text:
+              raise SystemExit("install.ps1 default release base was not found")
+          powershell_entry.write_text(
+              powershell_text.replace(powershell_default_base, f"https://github.com/{repository}/releases")
+          )
           PY
           (
             cd dist
