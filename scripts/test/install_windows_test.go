@@ -3,6 +3,7 @@ package scripts
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -86,6 +87,8 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 		"prepare-elevated",
 		"setup-elevated-context",
 		"Start Setup normally under the signed-in account",
+		"$tunnelSupervisorPidPath = Join-Path $runtimeDir 'tunnel-supervisor.pid'",
+		"$tunnelStopOutput = @(& $existingGenerationCore tunnel stop --runtime-root $runtimeDir 2>&1)",
 		"Stop-CloudflaredForUpgrade -BinaryPath $cloudflaredBinary",
 		"Copy-Item -LiteralPath $destinationBinary -Destination $binaryBackup -Force",
 		"Write-ProtectedText -Path $tokenPath",
@@ -100,14 +103,14 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 		"service launch-core --runtime-root",
 		"--start-core --runtime-root",
 		"& $destinationBinary service start --runtime-root $runtimeDir",
-		"& $destinationBinary tunnel start --runtime-root $runtimeDir",
 		"--start-tunnel --runtime-root",
+		"$tunnelStartupArguments = \"--start-tunnel --runtime-root",
+		"-FilePath $destinationTrayBinary",
+		"-Arguments $tunnelStartupArguments",
 		"-AdminLauncherPath $sourceTrayBinary",
-		"-LauncherPath $destinationBinary",
+		"-LauncherPath $destinationTrayBinary",
 		"-FilePath $AdminLauncherPath",
 		"Start-CloudflaredLauncher -LauncherPath $cloudflaredLauncherPath",
-		"Wait-QuickTunnelUrl -LogPaths @($cloudflaredStdoutLogPath, $cloudflaredStderrLogPath)",
-		"Wait-QuickTunnelReady -Path $quickTunnelUrlPath -ExpectedUrl $publicUrl",
 		"quick-tunnel-url.txt",
 		"& '$escapedBinaryPath' tunnel launch --runtime-root '$escapedRuntimeDir'",
 		"RuntimeInformation]::OSArchitecture",
@@ -117,6 +120,10 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 		"$resultErrorCode = 'rollback-failed'",
 		"$installWarningCode = 'runtime-launch-deferred'",
 		"$installWarningCode = \"$installWarningCode,runtime-launch-deferred\"",
+		"$installWarningCode = 'tunnel-start-deferred'",
+		"$installWarningCode = \"$installWarningCode,tunnel-start-deferred\"",
+		"Public access is starting in the background.",
+		"Tunnel startup continues in the background; readiness is shown in the control panel and logs.",
 		"-ErrorCode 'install-validation-failed'",
 		"scheduled-task-recovery-",
 		"Recovery files: $taskRecoveryPath",
@@ -138,6 +145,17 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("install.ps1 missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Wait-CloudflaredRunning",
+		"Wait-QuickTunnelUrl",
+		"Wait-QuickTunnelReady",
+		"Installer Engine finished trial without a Quick Tunnel public address.",
+		"& $destinationBinary tunnel start --runtime-root $runtimeDir",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("install.ps1 must not gate install/update completion on Tunnel/public readiness: %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{"[string] $RuntimeVersion", "version = $RuntimeVersion"} {
@@ -172,11 +190,28 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 	if probeCall < 0 || probeCall > legacyPrepareCall {
 		t.Fatal("Release payload must be proven Engine-ready before legacy migration or process mutation")
 	}
+	supervisorStopCall := strings.Index(script, "$tunnelStopOutput = @(& $existingGenerationCore tunnel stop --runtime-root $runtimeDir 2>&1)")
+	cloudflaredStopCall := strings.Index(script, "[void] (Stop-CloudflaredForUpgrade -BinaryPath $cloudflaredBinary)")
+	tunnelTokenWriteCall := strings.Index(script, "Write-ProtectedText -Path $tunnelTokenPath -Value $TunnelToken")
+	if supervisorStopCall < 0 || cloudflaredStopCall < 0 || tunnelTokenWriteCall < 0 ||
+		supervisorStopCall > cloudflaredStopCall || cloudflaredStopCall > tunnelTokenWriteCall {
+		t.Fatal("managed Tunnel supervisor must stop before cloudflared replacement and protected Token mutation")
+	}
 	if strings.Contains(script, "$engineOwnsTargetGeneration") {
 		t.Fatal("generation ownership must be decided by the Installer Engine, not by a PowerShell boolean")
 	}
 	if !strings.Contains(script, "install inspect --state-root $runtimeDir") {
 		t.Fatal("Setup must read the generation pointer state through the Installer Engine inspect, not by parsing active-version.json")
+	}
+	nativeUTF8Set := strings.Index(script, "[Console]::OutputEncoding = $Utf8NoBom")
+	nativeJSONCall := strings.Index(script, "$preflightVersionOutput = @(& $sourceBinary version --json 2>&1)")
+	nativeUTF8Restore := strings.LastIndex(script, "[Console]::OutputEncoding = $previousConsoleOutputEncoding")
+	if nativeUTF8Set < 0 || nativeJSONCall < 0 || nativeUTF8Restore < 0 ||
+		nativeUTF8Set > nativeJSONCall || nativeUTF8Restore < nativeJSONCall {
+		t.Fatal("Windows PowerShell 5.1 must decode AgentDock native JSON stdout as UTF-8 and restore the caller encoding")
+	}
+	if !strings.Contains(script, "$existingManifest = Get-Content -LiteralPath $runtimeManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json") {
+		t.Fatal("runtime.json must be read explicitly as UTF-8 on Windows PowerShell 5.1")
 	}
 	if !strings.Contains(script, "install prepare-windows-legacy") {
 		t.Fatal("pre-generation Windows installs must seed a committed legacy source before the current Engine publishes target files")
@@ -215,9 +250,10 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 	}
 	tunnelArg := strings.Index(script, "'--tunnel-mode', $resolvedTunnelMode")
 	coreStartCall := strings.Index(script, "& $destinationBinary service start --runtime-root $runtimeDir")
-	tunnelStartCall := strings.Index(script, "& $destinationBinary tunnel start --runtime-root $runtimeDir")
-	if tunnelArg < 0 || coreStartCall < 0 || tunnelStartCall < 0 || tunnelArg > coreStartCall || tunnelArg > tunnelStartCall {
-		t.Fatal("Installer Engine must receive the resolved tunnel mode before any adapter fallback activation")
+	tunnelProxyCall := strings.Index(script, "$tunnelStartupArguments = \"--start-tunnel --runtime-root")
+	tunnelCommitCall := strings.LastIndex(script, "$commitArgs = @(")
+	if tunnelArg < 0 || coreStartCall < 0 || tunnelProxyCall < 0 || tunnelCommitCall < 0 || tunnelArg > coreStartCall || tunnelCommitCall > tunnelProxyCall {
+		t.Fatal("Installer must pass tunnel intent to the Engine, commit the Core transaction, then launch Tunnel asynchronously")
 	}
 	if strings.Contains(script, "$manifestTunnelMode = 'none'") {
 		t.Fatal("Quick Tunnel must not rewrite Engine tunnel-mode to none")
@@ -243,8 +279,10 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 	if !strings.Contains(script, "'--defer-commit'") {
 		t.Fatal("Windows Engine install must defer commit until the adapter finishes")
 	}
-	commitCall := strings.Index(script, "install commit --install-root $runtimeDir --runtime-root $runtimeDir --transaction-id $engineTransactionId")
-	if commitCall < 0 {
+	commitCall := strings.Index(script, "$commitArgs = @(")
+	if commitCall < 0 ||
+		!strings.Contains(script, "'--transaction-id', $engineTransactionId") ||
+		!strings.Contains(script, "& $sourceBinary @commitArgs") {
 		t.Fatal("Windows installer must finalize a deferred Engine trial with install commit bound to the trial transaction id")
 	}
 	if strings.Contains(script, "if ($engineReady)") || strings.Contains(script, "if (-not $engineReady)") {
@@ -257,12 +295,12 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 	}
 	rollbackServiceStart := strings.LastIndex(script, "& $destinationBinary service start --runtime-root $runtimeDir")
 	rollbackHealthWait := strings.LastIndex(script, "Wait-AgentDockHealth -HealthPort $Port")
-	rollbackTunnelStart := strings.LastIndex(script, "& $destinationBinary tunnel start --runtime-root $runtimeDir")
-	if rollbackServiceStart < rollbackRestore || rollbackHealthWait < rollbackServiceStart || rollbackTunnelStart < rollbackHealthWait {
-		t.Fatal("Engine rollback must synchronously restore source Core health and Tunnel readiness after adapter state restoration")
+	rollbackTunnelProxy := strings.LastIndex(script, "$rollbackTunnelArguments = \"--start-tunnel --runtime-root")
+	if rollbackServiceStart < rollbackRestore || rollbackHealthWait < rollbackServiceStart || rollbackTunnelProxy < rollbackHealthWait {
+		t.Fatal("Engine rollback must restore source Core health before scheduling best-effort Tunnel recovery")
 	}
-	if abandonCall < rollbackTunnelStart {
-		t.Fatal("install abandon must run only after restored Tunnel readiness is confirmed")
+	if abandonCall < rollbackTunnelProxy {
+		t.Fatal("install abandon must run after best-effort Tunnel recovery is scheduled")
 	}
 	if !strings.Contains(script, "--rollback-failed") {
 		t.Fatal("adapter rollback failure must be recorded as failed/rollback_failed, not rolled_back")
@@ -335,11 +373,21 @@ func TestWindowsInstallerUsesNativeTaskStartBridge(t *testing.T) {
 		"service task-start",
 		"--task-name",
 		"--expected-user-sid",
-		"-AgentDockBinary $destinationBinary",
+		"-AgentDockBinary $sourceBinary",
 	} {
 		if !strings.Contains(combined, want) {
 			t.Fatalf("Windows native task bridge missing %q", want)
 		}
+	}
+	installScript := strings.ReplaceAll(string(installData), "\r\n", "\n")
+	bridgeStart := strings.Index(installScript, "function Invoke-SetupRuntimeProcess")
+	bridgeEnd := strings.Index(installScript, "function Get-AgentDockArchitecture")
+	if bridgeStart < 0 || bridgeEnd <= bridgeStart {
+		t.Fatal("Setup runtime task-start bridge function boundary is missing")
+	}
+	bridge := installScript[bridgeStart:bridgeEnd]
+	if !strings.Contains(bridge, "-AgentDockBinary $sourceBinary") || strings.Contains(bridge, "-AgentDockBinary $destinationBinary") {
+		t.Fatal("Setup runtime task-start bridge must use the verified payload Core instead of the stable shim while Installer commit is deferred")
 	}
 	if strings.Contains(string(brokerData), "manage-windows.ps1") || strings.Contains(combined, "task-run-session") {
 		t.Fatal("Windows runtime launch paths must not depend on the removed manage-windows compatibility shim")
@@ -353,6 +401,11 @@ func TestWindowsUninstallerCleansManagedTunnelState(t *testing.T) {
 	data, err := os.ReadFile("../install/uninstall-windows.ps1")
 	if err != nil {
 		t.Fatalf("read uninstall-windows.ps1: %v", err)
+	}
+	for index, value := range data {
+		if value > 0x7f {
+			t.Fatalf("uninstall-windows.ps1 must remain ASCII for Windows PowerShell 5.1; non-ASCII byte at offset %d", index)
+		}
 	}
 	script := string(data)
 	for _, want := range []string{
@@ -402,6 +455,20 @@ func TestWindowsUninstallerCleansManagedTunnelState(t *testing.T) {
 		}
 	}
 	engineRunCall := strings.Index(script, "$engineUninstallJson =")
+	nativeUTF8Set := strings.Index(script, "[Console]::OutputEncoding = $Utf8NoBom")
+	nativeUTF8Restore := strings.Index(script, "[Console]::OutputEncoding = $previousConsoleOutputEncoding")
+	if nativeUTF8Set < 0 || engineRunCall < 0 || nativeUTF8Restore < 0 ||
+		nativeUTF8Set > engineRunCall || nativeUTF8Restore < engineRunCall {
+		t.Fatal("uninstall Engine JSON stdout must be decoded as UTF-8 without leaking console encoding changes")
+	}
+	for _, utf8Read := range []string{
+		"$runtimeManifest = Get-Content -LiteralPath $runtimeManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json",
+		"$pendingTransaction = Get-Content -LiteralPath $installTransactionPath -Raw -Encoding UTF8 | ConvertFrom-Json",
+	} {
+		if !strings.Contains(script, utf8Read) {
+			t.Fatalf("uninstall JSON files must be read explicitly as UTF-8; missing %q", utf8Read)
+		}
+	}
 	taskCall := strings.Index(script, "Remove-AgentDockScheduledTask -AdminLauncherPath $trayBinary")
 	registryCall := strings.LastIndex(script, "Remove-RegistryValueIfPresent -Path $runKey")
 	commitCall := strings.Index(script, "install', 'commit'")
@@ -471,7 +538,7 @@ func TestWindowsTaskAdminUsesNativeAgentDockHelper(t *testing.T) {
 		"Schedule.Service",
 		"TaskRunLevelHighest",
 		"TaskLogonInteractiveToken",
-		"service launch-core --runtime-root",
+		"--task-core-host --runtime-root",
 		"SetSecurityDescriptor",
 		"prepare-elevated",
 		"prepare-standard",
@@ -495,6 +562,7 @@ func TestWindowsTaskAdminUsesNativeAgentDockHelper(t *testing.T) {
 	for _, forbidden := range []string{
 		"powershell.exe",
 		"File.Exists(request.LauncherPath)",
+		"service launch-core --runtime-root",
 	} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("TaskAdminService.cs must not depend on %q", forbidden)
@@ -759,6 +827,112 @@ func TestWindowsGeneratedCredentialRecoveryPreservesUnreadableCiphertext(t *test
 	}
 }
 
+func TestWindowsSetupOwnsCoreActivationAndReadsStructuredFailure(t *testing.T) {
+	installData, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install", "install.ps1"))
+	if err != nil {
+		t.Fatalf("read install.ps1: %v", err)
+	}
+	install := strings.ReplaceAll(string(installData), "\r\n", "\n")
+	for _, want := range []string{
+		"if ((-not $RegisterStartup) -or ($InstallChannel -eq 'setup')) {",
+		"$engineOwnsActivation = $InstallChannel -ne 'setup'",
+		"$commitArgs += '--healthy'",
+		"function Get-InstallerEngineFailureMessage",
+		"function Enter-InstallerTransactionLease",
+		"[IO.FileShare]::None",
+		"$installerTransactionLease = Enter-InstallerTransactionLease -RuntimeRoot $runtimeDir",
+		"[IO.File]::ReadAllText($engineResultPath, [Text.Encoding]::UTF8)",
+		"$engineResult.failure.message",
+		"[IO.File]::WriteAllLines($Path, $lines, [Text.Encoding]::Unicode)",
+	} {
+		if !strings.Contains(install, want) {
+			t.Fatalf("install.ps1 must keep Setup activation and structured failure handling at the adapter boundary; missing %q", want)
+		}
+	}
+	if strings.Contains(install, "$InstallChannel -eq 'setup' -and -not $existingInstallDetected") {
+		t.Fatal("existing Setup installs must not let Installer Engine start Core inside the Inno process tree")
+	}
+	if strings.Contains(install, "if ($enginePrepared -and -not $existingInstallDetected)") {
+		t.Fatal("fresh Setup must stay in trial until adapter activation completes")
+	}
+	if !strings.Contains(install, "$enginePrepared -and (-not $engineCommitted -or $healthStatus -eq 'healthy')") {
+		t.Fatal("Setup must commit only after adapter activation/deferred handling finishes")
+	}
+	leaseAcquire := strings.Index(install, "$installerTransactionLease = Enter-InstallerTransactionLease -RuntimeRoot $runtimeDir")
+	leaseRelease := strings.Index(install, "Exit-InstallerTransactionLease -Lease $installerTransactionLease")
+	commitCall := strings.Index(install, "$commitArgs = @(")
+	if leaseAcquire < 0 || leaseRelease < 0 || commitCall < 0 || leaseAcquire > leaseRelease || leaseRelease > commitCall {
+		t.Fatal("Setup must hold the Installer transaction lease through activation and release it immediately before commit")
+	}
+
+	brokerData, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install", "launch-windows-process.ps1"))
+	if err != nil {
+		t.Fatalf("read launch-windows-process.ps1: %v", err)
+	}
+	if !strings.Contains(string(brokerData), "[int] $TimeoutSeconds = 75") {
+		t.Fatal("Setup runtime broker must preserve launch headroom beyond the Windows Core health timeout")
+	}
+}
+func TestWindowsSetupRuntimeBrokerTimeoutExceedsCoreStartTimeout(t *testing.T) {
+	brokerData, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install", "launch-windows-process.ps1"))
+	if err != nil {
+		t.Fatalf("read launch-windows-process.ps1: %v", err)
+	}
+	coreData, err := os.ReadFile(filepath.Join("..", "..", "internal", "desktopruntime", "health_timeout.go"))
+	if err != nil {
+		t.Fatalf("read health_timeout.go: %v", err)
+	}
+
+	parseSeconds := func(content, prefix string) int {
+		t.Helper()
+		for _, line := range strings.Split(string(content), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) < 4 {
+				t.Fatalf("invalid timeout declaration %q", line)
+			}
+			seconds, err := strconv.Atoi(fields[3])
+			if err != nil {
+				t.Fatalf("parse timeout declaration %q: %v", line, err)
+			}
+			return seconds
+		}
+		t.Fatalf("timeout declaration with prefix %q was not found", prefix)
+		return 0
+	}
+
+	installData, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install", "install.ps1"))
+	if err != nil {
+		t.Fatalf("read install.ps1: %v", err)
+	}
+
+	brokerSeconds := parseSeconds(string(brokerData), "[int] $TimeoutSeconds =")
+	coreSeconds := parseSeconds(string(coreData), "const WindowsCoreStartTimeout =")
+	setupHealthSeconds := parseSeconds(string(installData), "[int] $coreHealthTimeoutSeconds =")
+	if setupHealthSeconds != coreSeconds {
+		t.Fatalf(
+			"Setup health timeout=%ds must match Windows Core start timeout=%ds",
+			setupHealthSeconds,
+			coreSeconds,
+		)
+	}
+	if !strings.Contains(string(installData), "AddSeconds($coreHealthTimeoutSeconds)") {
+		t.Fatal("Setup health wait must use the shared Windows Core health budget")
+	}
+	const minimumHeadroomSeconds = 15
+	if brokerSeconds-coreSeconds < minimumHeadroomSeconds {
+		t.Fatalf(
+			"Setup runtime broker timeout=%ds must leave at least %ds beyond Windows Core start timeout=%ds",
+			brokerSeconds,
+			minimumHeadroomSeconds,
+			coreSeconds,
+		)
+	}
+}
+
 func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 	installData, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install", "install.ps1"))
 	if err != nil {
@@ -786,9 +960,12 @@ func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 		"$setupRuntimeLauncherPath = Join-Path $PSScriptRoot 'launch-windows-process.ps1'",
 		"function Invoke-SetupRuntimeProcess",
 		"-Arguments \"service start --runtime-root",
-		"-Arguments \"tunnel start --runtime-root",
+		"$tunnelStartupArguments = \"--start-tunnel --runtime-root",
+		"-FilePath $destinationTrayBinary",
+		"-Arguments $tunnelStartupArguments",
 		"Invoke-SetupRuntimeProcess -FilePath $BinaryPath -Arguments '--background'",
 		"Invoke-SetupRuntimeProcess -FilePath (Join-Path $PSHOME 'powershell.exe') -Arguments $arguments",
+		"-HiddenHostBinary $destinationTrayBinary",
 	} {
 		if !strings.Contains(installScript, want) {
 			t.Fatalf("install.ps1 must route Setup-owned long-lived launches through the runtime broker; missing %q", want)
@@ -804,15 +981,21 @@ func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 		"& $AgentDockBinary service task-start",
 		"--task-name $taskName",
 		"--expected-user-sid $identity.User.Value",
+		"[string] $HiddenHostBinary",
 		"if ($WaitForExit) {",
-		"$process.WaitForExit()",
-		"RedirectStandardOutput = $true",
-		"RedirectStandardError = $true",
+		"ConvertTo-RuntimeHostArgument",
+		"--setup-runtime-host",
+		"--file-b64",
+		"--wait",
+		"--stdout-b64",
+		"--stderr-b64",
+		"--error-b64",
+		"-Execute $HiddenHostBinary",
+		"-Argument ($hostArguments -join ' ')",
 		"Get-RuntimeFailureMessage",
 		"Task Scheduler result: $rawResult",
 		"Read-RuntimeDiagnosticTail",
 		"Remove-Item -LiteralPath $diagnosticRoot -Recurse -Force",
-		"$wrapperLines += 'exit 0'",
 		"Unregister-ScheduledTask",
 		"AGENTDOCK_HOME",
 		"AGENTDOCK_DEFAULT_DIR",
@@ -824,11 +1007,17 @@ func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 	if !strings.Contains(brokerScript, "finally {") || !strings.Contains(brokerScript, "Unregister-ScheduledTask") {
 		t.Fatal("runtime launch broker must remove its temporary task even when launch fails")
 	}
+	for _, forbidden := range []string{"-Execute $powerShellPath", "-EncodedCommand $encodedCommand"} {
+		if strings.Contains(brokerScript, forbidden) {
+			t.Fatalf("runtime launch broker must not use a console-subsystem PowerShell task action: %q", forbidden)
+		}
+	}
 
 	for _, want := range []string{
 		"Source: \"..\\..\\scripts\\install\\launch-windows-process.ps1\"; Flags: dontcopy",
 		"ExtractTemporaryFile('launch-windows-process.ps1')",
 		"-AgentDockBinary ",
+		"-HiddenHostBinary ",
 		"function LaunchRuntimeProcess(",
 		"LaunchRuntimeProcess(ExpandConstant('{app}\\bin\\agentdock-tray.exe'), '')",
 	} {
@@ -859,8 +1048,11 @@ func TestWindowsRuntimeDiagnosticsPassesNativeTaskLauncher(t *testing.T) {
 	workflow := strings.ReplaceAll(string(workflowData), "\r\n", "\n")
 	for _, want := range []string{
 		"[string] $AgentDockBinary",
+		"[string] $HiddenHostBinary",
 		"$resolvedAgentDockBinary = (Resolve-Path -LiteralPath $AgentDockBinary).Path",
+		"$resolvedHiddenHostBinary = (Resolve-Path -LiteralPath $HiddenHostBinary).Path",
 		"-AgentDockBinary $resolvedAgentDockBinary",
+		"-HiddenHostBinary $resolvedHiddenHostBinary",
 	} {
 		if !strings.Contains(diagnostics, want) {
 			t.Fatalf("runtime diagnostics test must pass the native task launcher; missing %q", want)
@@ -868,8 +1060,11 @@ func TestWindowsRuntimeDiagnosticsPassesNativeTaskLauncher(t *testing.T) {
 	}
 	for _, want := range []string{
 		"$runtimeTestAgentDockBinary = Join-Path $env:RUNNER_TEMP 'agentdock-runtime-launch-test.exe'",
+		"$runtimeTestHiddenHostBinary = Join-Path $env:RUNNER_TEMP 'agentdock-runtime-host-test.exe'",
 		"go build -trimpath -o $runtimeTestAgentDockBinary .\\cmd\\agentdock",
+		"go build -trimpath -ldflags '-H=windowsgui' -o $runtimeTestHiddenHostBinary .\\cmd\\agentdock-shim",
 		"-AgentDockBinary $runtimeTestAgentDockBinary",
+		"-HiddenHostBinary $runtimeTestHiddenHostBinary",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("Windows Installer workflow must build and pass the native task launcher; missing %q", want)
@@ -877,7 +1072,7 @@ func TestWindowsRuntimeDiagnosticsPassesNativeTaskLauncher(t *testing.T) {
 	}
 }
 
-func TestWindowsNamedTunnelLifecycleCoversPreservationAndRollback(t *testing.T) {
+func TestWindowsNamedTunnelLifecycleCoversSoftFailureRecovery(t *testing.T) {
 	lifecycleData, err := os.ReadFile(filepath.Join("..", "..", "scripts", "test", "test-windows-named-tunnel-lifecycle.ps1"))
 	if err != nil {
 		t.Fatalf("read Windows Named Tunnel lifecycle test: %v", err)
@@ -896,15 +1091,19 @@ func TestWindowsNamedTunnelLifecycleCoversPreservationAndRollback(t *testing.T) 
 		"-TunnelTokenFile $stableTokenFile",
 		"Invoke-Installer -Archive $sourcePayload.Archive -Checksum $sourcePayload.Checksum",
 		"Invoke-Installer -Archive $TargetAgentDockArchive -Checksum $TargetAgentDockChecksumFile",
-		"'-OfflineArchive', $trialPayload.Archive",
-		"'-TunnelTokenFile', $invalidTokenFile",
+		"-Archive $trialPayload.Archive",
+		"-TunnelTokenFile $invalidTokenFile",
+		"Invalid Named Token must not roll back a healthy Core generation",
+		"Wait-TextFileContains",
+		"Get-Content -LiteralPath $Path -Raw -ErrorAction Stop",
+		"Provided Tunnel token is not valid.",
 		"Assert-NoTunnelTokenInProcessArguments",
 		"(Get-FileHash -LiteralPath $tunnelTokenPath -Algorithm SHA256).Hash -ne $ExpectedTokenHash",
-		"-ExpectedVersion $targetVersion",
-		"versions\\$trialVersion",
+		"-ExpectedVersion $trialVersion",
+		"soft-failure recovery",
 	} {
 		if !strings.Contains(lifecycle, want) {
-			t.Fatalf("Named Tunnel lifecycle test must cover install/repair/update/rollback preservation; missing %q", want)
+			t.Fatalf("Named Tunnel lifecycle test must cover install/repair/update/soft-failure recovery; missing %q", want)
 		}
 	}
 
@@ -923,7 +1122,7 @@ func TestWindowsNamedTunnelLifecycleCoversPreservationAndRollback(t *testing.T) 
 
 	workflow := strings.ReplaceAll(string(workflowData), "\r\n", "\n")
 	for _, want := range []string{
-		"Test Named Tunnel install update and rollback lifecycle",
+		"Test Named Tunnel install update and soft-failure recovery lifecycle",
 		"Build-VersionedAgentDock -Version '0.0.0-named-source-e2e'",
 		"Build-VersionedAgentDock -Version '999.0.0-named-trial-e2e'",
 		".\\scripts\\test\\test-windows-named-tunnel-lifecycle.ps1",
@@ -1005,6 +1204,62 @@ func TestWindowsSetupE2EStagesCompleteLegacyFixture(t *testing.T) {
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("Windows Installer workflow must pass a real legacy fixture binary; missing %q", want)
+		}
+	}
+
+	releaseWorkflowData, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read Release workflow: %v", err)
+	}
+	releaseWorkflow := strings.ReplaceAll(string(releaseWorkflowData), "\r\n", "\n")
+	for _, want := range []string{
+		"agentdock_windows_amd64.zip",
+		"-LegacyCorePath $env:LEGACY_CORE_PATH",
+		"-LegacyTrayPath $env:LEGACY_TRAY_PATH",
+	} {
+		if !strings.Contains(releaseWorkflow, want) {
+			t.Fatalf("Release workflow must stage and pass a published legacy fixture binary; missing %q", want)
+		}
+	}
+
+}
+
+func TestWindowsReleaseKeepsPublishedUpdaterCompatibilityAsset(t *testing.T) {
+	compatPath := filepath.Join("..", "..", "packaging", "windows", "compat", "manage-windows.ps1")
+	compatData, err := os.ReadFile(compatPath)
+	if err != nil {
+		t.Fatalf("read legacy Release compatibility manager: %v", err)
+	}
+	if len(compatData) < 3 || compatData[0] != 0xef || compatData[1] != 0xbb || compatData[2] != 0xbf {
+		t.Fatal("legacy Release compatibility manager must preserve the UTF-8 BOM required by Windows PowerShell 5.1")
+	}
+
+	releaseData, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read Release workflow: %v", err)
+	}
+	releaseWorkflow := strings.ReplaceAll(string(releaseData), "\r\n", "\n")
+	for _, want := range []string{
+		"Copy-Item .\\packaging\\windows\\compat\\manage-windows.ps1 dist\\manage-windows.ps1 -Force",
+		"dist\\manage-windows.ps1, dist\\share, dist\\wsl-helper",
+	} {
+		if !strings.Contains(releaseWorkflow, want) {
+			t.Fatalf("formal Windows Release must preserve the v0.8.2/v0.8.3 updater contract; missing %q", want)
+		}
+	}
+
+	installerWorkflowData, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "windows-installer.yml"))
+	if err != nil {
+		t.Fatalf("read Windows Installer workflow: %v", err)
+	}
+	installerWorkflow := strings.ReplaceAll(string(installerWorkflowData), "\r\n", "\n")
+	for _, want := range []string{
+		"test-windows-release-backcompat.ps1 -ArchivePath $archivePath",
+		"test-windows-legacy-online-migration.ps1",
+		"fetch-depth: 0",
+	} {
+		if !strings.Contains(installerWorkflow, want) {
+			t.Fatalf("Windows Installer gate must exercise the published updater and migration bridge; missing %q", want)
 		}
 	}
 }

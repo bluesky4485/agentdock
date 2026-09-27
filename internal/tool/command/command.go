@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/uvwt/agentdock/internal/config"
+	"github.com/uvwt/agentdock/internal/envstore"
 	"github.com/uvwt/agentdock/internal/tool/command/session"
 )
 
@@ -34,10 +36,6 @@ func (svc *Service) Exec(ctx context.Context, request ExecRequest) (Result, erro
 	if request.Cmd == "" {
 		return nil, toolError("INVALID_ARGUMENT", "cmd is required", "validation")
 	}
-	invocation, err := svc.prepareCommandInvocation(request)
-	if err != nil {
-		return nil, err
-	}
 	timeout, err := commandTimeout(request.TimeoutMS)
 	if err != nil {
 		return nil, err
@@ -55,6 +53,16 @@ func (svc *Service) Exec(ctx context.Context, request ExecRequest) (Result, erro
 	if err != nil {
 		return nil, err
 	}
+	invocation, err := svc.prepareCommandInvocation(commandCtx, request)
+	if err != nil {
+		return nil, err
+	}
+	skillReleaseHandled := false
+	defer func() {
+		if !skillReleaseHandled && invocation.skillRelease != nil {
+			invocation.skillRelease()
+		}
+	}()
 
 	if !svc.sessions.TryReserve(maxConcurrentCommandSessions) {
 		if svc.sessions.Closing() {
@@ -93,6 +101,14 @@ func (svc *Service) Exec(ctx context.Context, request ExecRequest) (Result, erro
 		return nil, err
 	}
 	s.SetExecutionContext(invocation.execution)
+	if invocation.skillRelease != nil {
+		skillReleaseHandled = true
+		release := invocation.skillRelease
+		go func() {
+			<-s.Done
+			release()
+		}()
+	}
 	if request.Stdin != "" {
 		if err := s.Write(request.Stdin); err != nil {
 			s.Kill()
@@ -441,15 +457,31 @@ func (svc *Service) listSessions() (Result, error) {
 }
 
 func (svc *Service) commandEnv(skillName string, extra map[string]string) ([]string, error) {
+	return svc.commandEnvWithRuntime(skillName, extra, nil)
+}
+
+func (svc *Service) commandEnvWithRuntime(skillName string, extra, runtime map[string]string) ([]string, error) {
+	var scope *envstore.Scope
+	if skillName != "" {
+		scope = &envstore.Scope{Kind: envstore.ScopeSkill, Name: skillName}
+	}
+	return svc.commandEnvWithRuntimeScope(scope, extra, runtime)
+}
+
+func (svc *Service) commandEnvWithRuntimeScope(scope *envstore.Scope, extra, runtime map[string]string) ([]string, error) {
 	env, err := svc.baseCommandEnv()
 	if err != nil {
 		return nil, err
 	}
-	overrides, err := svc.commandEnvOverrides(skillName, extra)
+	overrides, err := svc.commandEnvOverridesScope(scope, extra)
 	if err != nil {
 		return nil, err
 	}
 	for key, value := range overrides {
+		setPlatformCommandEnv(env, key, value)
+	}
+	// 运行时保留变量最后写入，确保 Skill env、请求 env 和宿主映射都不能覆盖。
+	for key, value := range runtime {
 		setPlatformCommandEnv(env, key, value)
 	}
 	return formatCommandEnv(env), nil
@@ -500,6 +532,9 @@ func (svc *Service) baseCommandEnv() (map[string]string, error) {
 // applyHostEnvMapping 只复制部署者显式声明的宿主变量；未配置的宿主环境继续保持隔离。
 func (svc *Service) applyHostEnvMapping(env map[string]string) {
 	for childKey, hostKey := range svc.config().CommandEnvFromEnv {
+		if config.IsReservedCommandEnvironmentKey(childKey) {
+			continue
+		}
 		if value, ok := os.LookupEnv(hostKey); ok {
 			setPlatformCommandEnv(env, childKey, value)
 		}

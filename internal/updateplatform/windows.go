@@ -10,10 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/uvwt/agentdock/internal/desktopruntime"
+	processcontrol "github.com/uvwt/agentdock/internal/process"
 	"github.com/uvwt/agentdock/internal/updateengine"
+	"golang.org/x/sys/windows"
 )
 
 type WindowsDriver struct {
@@ -85,7 +88,7 @@ func (driver *WindowsDriver) VerifyTrial(ctx context.Context, transaction update
 		return nil, err
 	}
 	if plan.CoreWasRunning {
-		if err := updateengine.WaitForVersion(ctx, plan.HealthURLs, transaction.TargetVersion, 45*time.Second); err != nil {
+		if err := updateengine.WaitForVersion(ctx, plan.HealthURLs, transaction.TargetVersion, desktopruntime.WindowsCoreStartTimeout); err != nil {
 			return nil, fmt.Errorf("target core health/version check failed: %w", err)
 		}
 	}
@@ -98,25 +101,31 @@ func (driver *WindowsDriver) VerifyTrial(ctx context.Context, transaction update
 		}
 	}
 
-	var warnings []string
-	if plan.TunnelWasRunning {
-		if err := driver.runStableCore(ctx, "tunnel", "start", "--runtime-root", driver.root); err != nil {
-			warnings = append(warnings, "Tunnel could not be restored after update: "+err.Error())
-		}
-	}
-	return warnings, nil
+	// Tunnel/public access is a soft dependency and is intentionally excluded from trial
+	// verification. It is restarted asynchronously only after the active pointer is committed.
+	return nil, nil
 }
 
 func (driver *WindowsDriver) Commit(_ context.Context, transaction updateengine.Transaction) error {
+	plan, err := driver.plan(transaction)
+	if err != nil {
+		return err
+	}
 	// source generation 必须保留到 terminal result 落盘以后；这里仅把 pointer
 	// 从 trial 收敛成 committed，不做任何不可逆清理。
-	return driver.store.WriteActive(updateengine.ActiveVersion{
+	if err := driver.store.WriteActive(updateengine.ActiveVersion{
 		SchemaVersion:   updateengine.SchemaVersion,
 		ActiveVersion:   transaction.TargetVersion,
 		FallbackVersion: transaction.SourceVersion,
 		State:           updateengine.StateCommitted,
 		UpdatedAt:       time.Now().UTC(),
-	})
+	}); err != nil {
+		return err
+	}
+	if plan.TunnelWasRunning {
+		_ = driver.startTunnelAfterCommit()
+	}
+	return nil
 }
 
 func (driver *WindowsDriver) Rollback(ctx context.Context, transaction updateengine.Transaction) error {
@@ -145,7 +154,7 @@ func (driver *WindowsDriver) Rollback(ctx context.Context, transaction updateeng
 	if plan.CoreWasRunning {
 		if err := driver.runStableCore(ctx, "service", "start", "--runtime-root", driver.root); err != nil {
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("restart source core: %w", err))
-		} else if err := updateengine.WaitForVersion(ctx, plan.HealthURLs, transaction.SourceVersion, 45*time.Second); err != nil {
+		} else if err := updateengine.WaitForVersion(ctx, plan.HealthURLs, transaction.SourceVersion, desktopruntime.WindowsCoreStartTimeout); err != nil {
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("source core health/version check failed: %w", err))
 		}
 	}
@@ -155,9 +164,7 @@ func (driver *WindowsDriver) Rollback(ctx context.Context, transaction updateeng
 		}
 	}
 	if plan.TunnelWasRunning {
-		if err := driver.runStableCore(ctx, "tunnel", "start", "--runtime-root", driver.root); err != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("restart source tunnel: %w", err))
-		}
+		_ = driver.startTunnelAfterCommit()
 	}
 	return errors.Join(rollbackErrors...)
 }
@@ -195,6 +202,7 @@ func (driver *WindowsDriver) verifyGeneration(version, generationRoot string) er
 func (driver *WindowsDriver) runStableCore(ctx context.Context, args ...string) error {
 	command := exec.CommandContext(ctx, driver.layout.CoreShim(), args...)
 	command.Dir = driver.root
+	processcontrol.Configure(command)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
@@ -206,9 +214,27 @@ func (driver *WindowsDriver) runStableCore(ctx context.Context, args ...string) 
 	return nil
 }
 
+func (driver *WindowsDriver) startTunnelAfterCommit() error {
+	command := exec.Command(driver.layout.TrayShim(), "--start-tunnel", "--runtime-root", driver.root)
+	command.Dir = driver.root
+	command.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
+	}
+	processcontrol.Configure(command)
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("start Tunnel recovery proxy: %w", err)
+	}
+	if err := command.Process.Release(); err != nil {
+		return fmt.Errorf("release Tunnel recovery proxy: %w", err)
+	}
+	return nil
+}
+
 func (driver *WindowsDriver) startStableTray(ctx context.Context) error {
 	command := exec.CommandContext(ctx, driver.layout.TrayShim(), "--background")
 	command.Dir = driver.root
+	processcontrol.Configure(command)
 	if output, err := command.CombinedOutput(); err != nil {
 		message := strings.TrimSpace(string(output))
 		if message == "" {

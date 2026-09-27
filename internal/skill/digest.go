@@ -29,11 +29,16 @@ func DigestDirectory(root string) (string, error) {
 	return digestDirectory(root, false)
 }
 
-// digestPackageContent 计算安装后的稳定内容摘要。
-// 传输层 ZIP 摘要用于校验下载来源；版本冲突判断必须只看最终包内容，
-// 并忽略 AgentDock 自己写入的安装元数据。
+// digestPackageContent computes the stable digest of the effective Skill
+// package content after transport-specific permission normalization.
 func digestPackageContent(root string) (string, error) {
 	return digestDirectory(root, true)
+}
+
+// DigestPackageContent returns the stable digest of the effective Skill package
+// content.
+func DigestPackageContent(root string) (string, error) {
+	return digestPackageContent(root)
 }
 
 func digestDirectory(root string, packageContent bool) (string, error) {
@@ -52,15 +57,18 @@ func digestDirectory(root string, packageContent bool) (string, error) {
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("symlink is not allowed in skill package: %s", path)
 		}
-		if entry.IsDir() {
-			return nil
-		}
 		rel, err := filepath.Rel(rootAbs, path)
 		if err != nil {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if packageContent && rel == ".agentdock-install.json" {
+		if packageContent && IsIgnoredPackageMetadataPath(rel) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
 			return nil
 		}
 		paths = append(paths, rel)
@@ -115,7 +123,7 @@ func normalizeDigest(value string) string {
 	return value
 }
 
-func extractZip(src, dest string, maxBytes int64) error {
+func extractZip(src, dest string, maxBytes int64, maxFiles int) error {
 	reader, err := zip.OpenReader(src)
 	if err != nil {
 		return err
@@ -127,6 +135,7 @@ func extractZip(src, dest string, maxBytes int64) error {
 		rootPrefix += string(os.PathSeparator)
 	}
 	var total int64
+	files := 0
 	for _, file := range reader.File {
 		if file.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("zip symlink is not allowed: %s", file.Name)
@@ -146,6 +155,10 @@ func extractZip(src, dest string, maxBytes int64) error {
 				return err
 			}
 			continue
+		}
+		files++
+		if files > maxFiles {
+			return fmt.Errorf("package exceeds %d files", maxFiles)
 		}
 		total += int64(file.UncompressedSize64)
 		if total > maxBytes {

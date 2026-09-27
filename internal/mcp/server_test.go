@@ -15,7 +15,7 @@ import (
 )
 
 func TestToolDescriptorsExposeSafetyAnnotations(t *testing.T) {
-	descriptors := toolDescriptorsForConfig(t, []string{"read_file", "skill_package", "task_manage", "file_publish"}, config.Config{})
+	descriptors := toolDescriptorsForConfig(t, []string{"read_file", "skill_manage", "task_manage", "file_publish"}, config.Config{})
 	byName := map[string]map[string]any{}
 	for _, descriptor := range descriptors {
 		name, _ := descriptor["name"].(string)
@@ -23,7 +23,7 @@ func TestToolDescriptorsExposeSafetyAnnotations(t *testing.T) {
 	}
 
 	assertToolAnnotation(t, byName["read_file"], true, false, false)
-	assertToolAnnotation(t, byName["skill_package"], false, true, true)
+	assertToolAnnotation(t, byName["skill_manage"], false, true, true)
 	assertToolAnnotation(t, byName["task_manage"], false, false, false)
 	assertToolAnnotation(t, byName["file_publish"], false, false, true)
 
@@ -72,7 +72,7 @@ func TestFilePublishDescriptorExposesFileRewritePath(t *testing.T) {
 
 func TestOpenAIFileMetadataMatchesDeclaredSchemas(t *testing.T) {
 	for _, def := range app.ToolDefinitions() {
-		meta := toolMetadata(def, true)
+		meta := toolMetadata(def, config.MCPAppsModeFull)
 		inputProps, _ := def.InputSchema["properties"].(map[string]any)
 		for _, path := range def.FileArgRewritePaths {
 			property, ok := inputProps[path].(map[string]any)
@@ -312,5 +312,5 @@ func toolDescriptorsForConfig(t *testing.T, names []string, cfg config.Config) [
 		}
 		definitions = append(definitions, definition)
 	}
-	return toolDescriptors(definitions, true)
+	return toolDescriptors(definitions, config.MCPAppsModeFull)
 }

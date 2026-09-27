@@ -227,25 +227,17 @@ final class ServiceController: @unchecked Sendable {
         return TunnelMode(rawValue: rawMode) ?? .local
     }
 
-    func reconcileTunnelRegistrationFromConfiguration() async throws {
+    func reconcileTunnelRegistrationFromConfiguration() throws {
         // 旧结构仍存在时必须先走迁移事务，不能在旁边提前注册第二套 Tunnel。
         guard !LegacyDesktopRuntimeMigration.isPresent(paths: paths) else { return }
 
+        // 这里只收敛“是否应注册”的长期配置，不等待 cloudflared 或公网 ready。
+        // 更新 handoff 已负责重新绑定目标 App；普通启动也不应因短暂网络状态重建 SMAppService。
         switch try configuredTunnelMode() {
         case .local:
             try setTunnelEnabled(false)
         case .quick, .named:
             try setTunnelEnabled(true)
-            if tunnelService.status == .enabled, !(await waitForTunnelProcess()) {
-                // App Bundle 被原子替换后，macOS 偶尔仍把旧 SMAppService 注册显示为 enabled，
-                // 但 launchd 保存的 Bundle 关联已经失效。此时单纯再次 register 会直接 no-op；
-                // 必须完整注销并重新注册，效果等同于用户手动“仅本地 → 公网”但无需人工介入。
-                NSLog("AgentDock Tunnel 注册显示 enabled 但进程未稳定，开始自动重新注册。")
-                try restartTunnel()
-                guard await waitForTunnelProcess() else {
-                    throw ValidationError(L10n.text("AgentDock Tunnel was re-registered, but the background process did not start reliably."))
-                }
-            }
         }
     }
 
@@ -298,9 +290,8 @@ final class ServiceController: @unchecked Sendable {
             )
         } catch {
             // Tunnel availability depends on ServiceManagement policy plus external/network state.
-            // A broken Tunnel must not turn an otherwise healthy App/Core update into a rollback.
-            // Report an explicit non-ready state to the Arbiter; it commits with a warning, then
-            // AppDelegate's post-handoff reconciliation gets one more bounded recovery attempt.
+            // Record the handoff state for diagnostics, but do not turn it into an update gate or
+            // completion warning; the control panel owns eventual Tunnel/public readiness.
             NSLog("AgentDock Tunnel registration could not be restored during update handoff: %@", error.localizedDescription)
             tunnelState = "unavailable"
         }
@@ -308,30 +299,33 @@ final class ServiceController: @unchecked Sendable {
     }
 
     func recoverBackgroundServicesAfterUpdate(coreEnabled: Bool, tunnelEnabled: Bool) async -> [String] {
-        // App Bundle 刚替换后，SMAppService 的注册状态可能已经生效，但 launchd 真正拉起
-        // Core/Tunnel 仍需要更长时间。先给系统一个正常传播窗口，再做一次有界自愈；
-        // 自愈仍失败时只提示，不把已经完成 handoff 的 App 更新回滚掉。
+        // App Bundle 替换后，SMAppService 可能已经返回 enabled，但 launchd 尚未真正启动 Core。
+        // 先给系统一个正常传播窗口；仍不健康时只做一次完整 unregister/register 自愈。
+        // 最终更新是否提交仍由外部 Arbiter 的 Core health/version gate 决定。
         var warnings: [String] = []
         if tunnelEnabled,
            tunnelService.status == .enabled,
            !(await waitForTunnelProcess()) {
-            warnings.append(L10n.text("AgentDock Tunnel background registration was restored, but the process is still starting."))
+            NSLog("AgentDock Tunnel 注册显示 enabled 但进程未稳定，开始自动重新注册。")
+            do {
+                try restartTunnel()
+                if !(await waitForTunnelProcess()) {
+                    NSLog("AgentDock Tunnel 重新注册后进程仍未稳定。")
+                }
+            } catch {
+                // Tunnel/public readiness is intentionally outside the update commit boundary.
+                NSLog("AgentDock Tunnel 自动重新注册失败：%@", error.localizedDescription)
+            }
         }
         if coreEnabled,
            coreService.status == .enabled,
            let configuration = ServiceConfiguration.load(from: paths.environment),
            !(await waitForHealth(configuration: configuration, timeout: 10)) {
-            // 实机更新后可能出现“SMAppService 显示 enabled，但 Core 进程没有真正拉起”的状态。
-            // 控制面板“重启”之所以能恢复，是因为它会完整 unregister/register；这里复用同一路径，
-            // 避免用户在每次 App 更新后手动点击重启。
             NSLog("AgentDock Core 注册显示 enabled 但健康检查未通过，开始自动重新注册。")
             do {
                 try await restart()
             } catch {
-                warnings.append(L10n.format(
-                    "AgentDock Core background registration was restored, but automatic restart still failed the health check: %@",
-                    error.localizedDescription
-                ))
+                warnings.append(error.localizedDescription)
             }
         }
         return warnings
@@ -369,10 +363,8 @@ final class ServiceController: @unchecked Sendable {
         }
     }
 
-    func update(onProgress: @escaping (UpdateProgressEvent) -> Void) async throws -> String {
-        try validateServiceManagementReadiness()
-
-        let check = try await runInBackground {
+    func checkForUpdates() async throws -> DesktopUpdateCheck {
+        try await runInBackground {
             let result = try runProcess(
                 executable: self.paths.binary.path,
                 arguments: ["update", "--check"],
@@ -383,16 +375,12 @@ final class ServiceController: @unchecked Sendable {
             }
             return try DesktopUpdateCheck.decode(result.output)
         }
-        guard check.updateAvailable else {
-            // 没有 pending update result 时这只能是上一次未完成流程留下的临时状态。
-            DesktopUpdateServiceState.remove(at: paths.updateServiceState)
-            onProgress(.local(
-                type: .completed,
-                currentVersion: check.currentVersion,
-                targetVersion: check.latestVersion
-            ))
-            return check.message
-        }
+    }
+
+    func applyUpdate(onProgress: @escaping (UpdateProgressEvent) -> Void) async throws -> String {
+        // 用户确认之后才检查后台服务写入能力并进入停服/替换阶段。
+        // 纯版本检查不应该产生任何服务状态或更新事务副作用。
+        try validateServiceManagementReadiness()
 
         let currentStatus = await status()
         let serviceState = DesktopUpdateServiceState(

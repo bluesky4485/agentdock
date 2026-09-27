@@ -1,16 +1,23 @@
 package skill
 
 import (
+	"context"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	skills "github.com/uvwt/agentdock/internal/skill"
 )
 
 type CapabilityItem struct {
-	Name        string
-	Description string
-	File        string
-	Bundled     bool
+	Name          string
+	Description   string
+	File          string
+	SkillRef      string
+	SourceType    string
+	SourceID      string
+	PluginName    string
+	ContentDigest string
 }
 
 func (s *Service) CapabilityItems() ([]CapabilityItem, error) {
@@ -18,83 +25,148 @@ func (s *Service) CapabilityItems() ([]CapabilityItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	bundledNames, err := s.state.BundledSkills()
-	if err != nil {
-		return nil, err
-	}
-	bundled := make(map[string]struct{}, len(bundledNames))
-	for _, name := range bundledNames {
-		bundled[name] = struct{}{}
-	}
 	items := make([]CapabilityItem, 0, len(names))
 	for _, name := range names {
-		packageDir, resolveErr := s.state.Resolve(name, "")
-		if resolveErr != nil || skills.ValidatePackage(packageDir) != nil {
+		resolved, release, err := s.Acquire(context.Background(), ManagedSkillRef(name))
+		if err != nil {
 			continue
 		}
-		doc, loadErr := skills.LoadSkillDocument(packageDir)
-		if loadErr != nil {
+		if err := skills.ValidatePackage(resolved.Root); err != nil {
+			release()
 			continue
 		}
-		_, isBundled := bundled[name]
-		items = append(items, CapabilityItem{Name: name, Description: strings.TrimSpace(doc.Description), File: "skill://" + name + "/SKILL.md", Bundled: isBundled})
+		doc, docErr := skills.LoadSkillDocument(resolved.Root)
+		digest, digestErr := managedContentDigest(resolved.Root)
+		release()
+		if docErr != nil || digestErr != nil || doc.Name != name {
+			continue
+		}
+		items = append(items, CapabilityItem{
+			Name: name, Description: strings.TrimSpace(doc.Description),
+			File: resolved.SkillRef + "/SKILL.md", SkillRef: resolved.SkillRef,
+			SourceType: resolved.SourceType, SourceID: resolved.SourceID,
+			ContentDigest: digest,
+		})
 	}
+	if s.plugins != nil {
+		installed, err := s.plugins.List()
+		if err != nil {
+			return nil, err
+		}
+		for _, plugin := range installed {
+			if !plugin.Enabled {
+				continue
+			}
+			for _, component := range plugin.Components.Skills {
+				resolved, release, err := s.Acquire(context.Background(), PluginSkillRef(plugin.Name, component.Name))
+				if err != nil {
+					continue
+				}
+				doc, docErr := skills.LoadSkillDocument(resolved.Root)
+				release()
+				if docErr != nil || doc.Name != component.Name {
+					continue
+				}
+				items = append(items, CapabilityItem{
+					Name: component.Name, Description: strings.TrimSpace(doc.Description),
+					File: resolved.SkillRef + "/SKILL.md", SkillRef: resolved.SkillRef,
+					SourceType: resolved.SourceType, SourceID: resolved.SourceID,
+					PluginName: plugin.Name, ContentDigest: component.ContentDigest,
+				})
+			}
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Name != items[j].Name {
+			return items[i].Name < items[j].Name
+		}
+		if items[i].SourceType != items[j].SourceType {
+			return items[i].SourceType < items[j].SourceType
+		}
+		return items[i].SourceID < items[j].SourceID
+	})
 	return items, nil
 }
 
 func (s *Service) RuntimeSkills() (Result, error) {
-	result, err := s.list()
+	capabilities, err := s.CapabilityItems()
 	if err != nil {
 		return nil, err
 	}
-	items, _ := result["skills"].([]map[string]any)
-	for _, item := range items {
-		skill, _ := item["skill"].(string)
-		version, _ := item["active_version"].(string)
-		if strings.TrimSpace(skill) == "" || strings.TrimSpace(version) == "" {
+	skillsResult := make([]map[string]any, 0, len(capabilities))
+	for _, capability := range capabilities {
+		resolved, release, err := s.Acquire(context.Background(), capability.SkillRef)
+		if err != nil {
 			continue
 		}
-		packageDir, err := s.state.InstalledPath(skill, version)
-		if err != nil {
-			return nil, skillToolError(err)
+		files, filesErr := collectRuntimeSkillFiles(filepath.Clean(resolved.Root))
+		release()
+		if filesErr != nil {
+			continue
 		}
-		document, err := skills.LoadSkillDocument(packageDir)
-		if err != nil {
-			return nil, skillToolError(err)
+		item := map[string]any{
+			"skill": resolved.Name, "name": capability.Name, "description": capability.Description,
+			"skill_ref": resolved.SkillRef, "source_type": resolved.SourceType,
+			"content_digest": capability.ContentDigest, "file_count": len(files),
 		}
-		files, err := collectRuntimeSkillFiles(packageDir)
-		if err != nil {
-			return nil, err
+		if resolved.PluginName != "" {
+			item["plugin_name"] = resolved.PluginName
 		}
-		item["name"] = document.Name
-		item["description"] = document.Description
-		item["file_count"] = len(files)
+		skillsResult = append(skillsResult, item)
 	}
-	result["source"] = runtimeAPISource
-	return result, nil
+	return Result{"action": "list", "count": len(skillsResult), "skills": skillsResult, "source": runtimeAPISource}, nil
 }
 
 func (s *Service) RuntimeSkill(skill string) (Result, error) {
-	result, err := s.inspect(InspectRequest{Skill: skill})
+	ref := runtimeSkillReference(skill)
+	resolved, release, err := s.Acquire(context.Background(), ref)
 	if err != nil {
 		return nil, err
 	}
-	result["source"] = runtimeAPISource
-	result["files"] = []runtimeSkillFile{}
-	result["file_count"] = 0
-	version, _ := result["version"].(string)
-	if strings.TrimSpace(version) == "" {
-		return result, nil
-	}
-	packageDir, err := s.state.InstalledPath(skill, version)
+	defer release()
+	doc, err := skills.LoadSkillDocument(resolved.Root)
 	if err != nil {
 		return nil, skillToolError(err)
 	}
-	files, err := collectRuntimeSkillFiles(packageDir)
+	digest, err := runtimeSkillContentDigest(resolved)
 	if err != nil {
 		return nil, err
 	}
-	result["files"] = files
-	result["file_count"] = len(files)
+	files, err := collectRuntimeSkillFiles(resolved.Root)
+	if err != nil {
+		return nil, err
+	}
+	result := Result{
+		"action": "inspect", "skill": resolved.Name, "name": doc.Name, "description": doc.Description,
+		"skill_ref": resolved.SkillRef, "source_type": resolved.SourceType,
+		"content_digest": digest, "document": doc, "files": files,
+		"file_count": len(files), "source": runtimeAPISource,
+	}
+	if resolved.PluginName != "" {
+		result["plugin_name"] = resolved.PluginName
+	}
 	return result, nil
+}
+
+func runtimeSkillReference(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "skill://") {
+		return value
+	}
+	return ManagedSkillRef(value)
+}
+
+func runtimeSkillContentDigest(resolved ResolvedSkill) (string, error) {
+	if resolved.ContentDigest != "" {
+		return resolved.ContentDigest, nil
+	}
+	return managedContentDigest(resolved.Root)
+}
+
+func managedContentDigest(root string) (string, error) {
+	digest, err := skills.DigestPackageContent(root)
+	if err != nil {
+		return "", toolErrorDetails("SKILL_PACKAGE_UNAVAILABLE", "failed to digest current managed Skill content", "runtime", map[string]any{"reason": err.Error()})
+	}
+	return digest, nil
 }

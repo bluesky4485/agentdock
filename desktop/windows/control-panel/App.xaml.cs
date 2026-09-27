@@ -61,6 +61,19 @@ public partial class App : System.Windows.Application
             }
             return;
         }
+        if (e.Args.Any(argument => string.Equals(argument, "--run-elevated-agentdock", StringComparison.OrdinalIgnoreCase)))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            if (!TryGetStartupRuntimeRoot(e.Args, "--run-elevated-agentdock", out var elevatedCommandRuntimeRoot) ||
+                !TryGetStartupArgument(e.Args, "--operation-id", out var operationId) ||
+                !ControlPanelDiagnostics.IsValidOperationId(operationId))
+            {
+                Environment.Exit(2);
+                return;
+            }
+            _ = RunElevatedAgentDockAndExitAsync(elevatedCommandRuntimeRoot, e.Args);
+            return;
+        }
         if (TryGetStartupRuntimeRoot(e.Args, "--start-core", out var coreRuntimeRoot))
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
@@ -74,12 +87,18 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        var background = e.Args.Any(arg => string.Equals(arg, "--background", StringComparison.OrdinalIgnoreCase));
         _singleInstanceMutex = new Mutex(true, MutexName, out var createdNew);
         _ownsSingleInstanceMutex = createdNew;
         if (!createdNew)
         {
-            using var existingEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
-            existingEvent.Set();
+            // 后台启动只保证 Tray 常驻，不能把已经运行的控制面板主动弹到前台。
+            // 用户从开始菜单、快捷方式或安装完成页显式打开时才发送 ShowEvent。
+            if (!background)
+            {
+                using var existingEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
+                existingEvent.Set();
+            }
             Shutdown();
             return;
         }
@@ -92,7 +111,6 @@ public partial class App : System.Windows.Application
         CreateNotifyIcon();
         StartShowEventListener();
 
-        var background = e.Args.Any(arg => string.Equals(arg, "--background", StringComparison.OrdinalIgnoreCase));
         if (!background)
         {
             ShowControlPanel();
@@ -117,6 +135,43 @@ public partial class App : System.Windows.Application
             }
         }
         return !string.IsNullOrWhiteSpace(runtimeRoot);
+    }
+
+    private static bool TryGetStartupArgument(string[] arguments, string name, out string value)
+    {
+        value = "";
+        for (var index = 0; index < arguments.Length - 1; index++)
+        {
+            if (!string.Equals(arguments[index], name, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            value = arguments[index + 1];
+            return !string.IsNullOrWhiteSpace(value);
+        }
+        return false;
+    }
+
+    private async Task RunElevatedAgentDockAndExitAsync(string runtimeRoot, IReadOnlyList<string> startupArguments)
+    {
+        var exitCode = 1;
+        try
+        {
+            using var runtime = new RuntimeService(runtimeRoot);
+            exitCode = await runtime.RunElevatedNativeCommandHostAsync(startupArguments);
+        }
+        catch (Exception ex)
+        {
+            ControlPanelDiagnostics.RecordFailureExistingLog(
+                runtimeRoot,
+                "elevated-command",
+                "startup",
+                ex);
+        }
+        finally
+        {
+            Environment.Exit(exitCode);
+        }
     }
 
     private async Task RunCoreTaskAndExitAsync(string runtimeRoot)
@@ -163,17 +218,7 @@ public partial class App : System.Windows.Application
 
     private static void RecordBackgroundStartupFailure(string runtimeRoot, string component, Exception exception)
     {
-        try
-        {
-            var logsDirectory = Path.Combine(runtimeRoot, "logs");
-            Directory.CreateDirectory(logsDirectory);
-            var message = $"{DateTimeOffset.Now:O} {component} startup failed: {exception.Message}{Environment.NewLine}";
-            File.AppendAllText(Path.Combine(logsDirectory, "control-panel.err.log"), message, new System.Text.UTF8Encoding(false));
-        }
-        catch
-        {
-            // 登录启动必须静默退出；无法写日志时不再制造第二个失败窗口。
-        }
+        ControlPanelDiagnostics.RecordFailure(runtimeRoot, component, "startup", exception);
     }
 
     public void ShowControlPanel()
@@ -585,6 +630,7 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
+            Runtime.RecordControlPanelFailure("tray", action, ex);
             _notifyIcon?.ShowBalloonTip(5000, "AgentDock", LastNonEmptyLine(ex.Message, UiText.Get("OperationFailed")), Forms.ToolTipIcon.Error);
         }
     }

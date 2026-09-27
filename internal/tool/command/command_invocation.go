@@ -8,22 +8,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/uvwt/agentdock/internal/config"
 	"github.com/uvwt/agentdock/internal/envstore"
 	"github.com/uvwt/agentdock/internal/tool/command/session"
 	"github.com/uvwt/agentdock/internal/workspace"
 )
 
 type commandInvocation struct {
-	command   string
-	workdir   string
-	env       []string
-	build     session.CommandFactory
-	execution session.ExecutionContext
-}
-
-type commandSkillContext struct {
-	skill    string
-	envSkill string
+	command      string
+	workdir      string
+	env          []string
+	build        session.CommandFactory
+	execution    session.ExecutionContext
+	skillRelease func()
 }
 
 func (invocation commandInvocation) start(ctx context.Context, timeout time.Duration, tty bool, prepare session.PrepareFunc) (*session.Session, session.PreparationStatus, error) {
@@ -33,12 +30,41 @@ func (invocation commandInvocation) start(ctx context.Context, timeout time.Dura
 	return session.StartWithTTY(ctx, invocation.command, invocation.workdir, invocation.env, timeout, tty, prepare)
 }
 
-func (svc *Service) newHostCommandInvocation(request ExecRequest) (commandInvocation, error) {
-	skillContext, err := parseCommandSkillContext(request)
+func (svc *Service) acquireSkill(ctx context.Context, skillRef string) (SkillLease, error) {
+	skillRef = strings.TrimSpace(skillRef)
+	if skillRef == "" {
+		return SkillLease{}, nil
+	}
+	if svc.resolveSkill == nil {
+		return SkillLease{}, toolError("SKILL_CONTEXT_INVALID", "Skill resolver is unavailable", "runtime")
+	}
+	lease, err := svc.resolveSkill(ctx, skillRef)
+	if err != nil {
+		return SkillLease{}, err
+	}
+	if lease.Release == nil {
+		lease.Release = func() {}
+	}
+	if strings.TrimSpace(lease.Name) == "" || strings.TrimSpace(lease.Root) == "" {
+		lease.Release()
+		return SkillLease{}, toolErrorDetails("SKILL_CONTEXT_INVALID", "resolved Skill context is incomplete", "runtime", map[string]any{"skill_ref": skillRef})
+	}
+	return lease, nil
+}
+
+func (svc *Service) newHostCommandInvocation(ctx context.Context, request ExecRequest) (commandInvocation, error) {
+	lease, err := svc.acquireSkill(ctx, request.SkillRef)
 	if err != nil {
 		return commandInvocation{}, err
 	}
-	workdir, err := svc.resolveHostCommandWorkdir(request.Workdir, skillContext.skill)
+	releaseOnError := true
+	defer func() {
+		if releaseOnError && lease.Release != nil {
+			lease.Release()
+		}
+	}()
+
+	workdir, err := svc.resolveHostCommandWorkdir(request.Workdir, lease.Root)
 	if err != nil {
 		return commandInvocation{}, err
 	}
@@ -49,39 +75,30 @@ func (svc *Service) newHostCommandInvocation(request ExecRequest) (commandInvoca
 	if !info.IsDir() {
 		return commandInvocation{}, toolError("NOT_A_DIRECTORY", "workdir is not a directory", "validation")
 	}
-	commandEnv, err := svc.commandEnv(skillContext.envSkill, request.Env)
+	runtimeEnv := cloneRuntimeEnv(lease.RuntimeEnv)
+	expectedDataDir := strings.TrimSpace(lease.SkillDataDir)
+	if expectedDataDir != "" {
+		if runtimeEnv == nil {
+			runtimeEnv = map[string]string{}
+		}
+		runtimeEnv[config.SkillDataDirEnvKey] = expectedDataDir
+	}
+	commandEnv, err := svc.commandEnvWithRuntimeScope(lease.EnvScope, request.Env, runtimeEnv)
 	if err != nil {
 		return commandInvocation{}, err
 	}
-	return commandInvocation{command: request.Cmd, workdir: workdir, env: commandEnv}, nil
-}
-
-func parseCommandSkillContext(request ExecRequest) (commandSkillContext, error) {
-	skill := strings.TrimSpace(request.Skill)
-	envSkill := strings.TrimSpace(request.SkillEnv)
-	if skill != "" && envSkill != "" && skill != envSkill {
-		return commandSkillContext{}, toolErrorDetails(
-			"INVALID_ARGUMENT",
-			"skill and skill_env must reference the same Skill when both are provided",
-			"validation",
-			map[string]any{"skill": skill, "skill_env": envSkill},
-		)
-	}
-	if envSkill == "" {
-		envSkill = skill
-	}
-	return commandSkillContext{skill: skill, envSkill: envSkill}, nil
-}
-
-func (svc *Service) resolveHostCommandWorkdir(requested string, skill string) (string, error) {
-	skillDir := ""
-	if skill != "" {
-		var err error
-		skillDir, err = svc.resolveSkillCommandDir(skill)
-		if err != nil {
-			return "", err
+	if expectedDataDir != "" {
+		if _, err := svc.ensureSkillDataDirPath(expectedDataDir, lease.Name); err != nil {
+			return commandInvocation{}, err
 		}
 	}
+	releaseOnError = false
+	return commandInvocation{
+		command: request.Cmd, workdir: workdir, env: commandEnv, skillRelease: lease.Release,
+	}, nil
+}
+
+func (svc *Service) resolveHostCommandWorkdir(requested, skillDir string) (string, error) {
 	if raw := strings.TrimSpace(requested); raw != "" {
 		resolved, err := svc.ws.ResolveExisting(raw)
 		if err != nil {
@@ -99,50 +116,34 @@ func (svc *Service) resolveHostCommandWorkdir(requested string, skill string) (s
 	return resolved.Abs, nil
 }
 
-func (svc *Service) resolveSkillCommandDir(skill string) (string, error) {
-	path, err := svc.resolveSkill(skill)
-	if err != nil {
-		return "", toolErrorDetails(
-			"SKILL_CONTEXT_INVALID",
-			"resolve active Skill directory: "+err.Error(),
-			"validation",
-			map[string]any{"skill": skill, "reason": err.Error()},
-		)
+func (svc *Service) commandEnvOverrides(skillName string, extra map[string]string) (map[string]string, error) {
+	var scope *envstore.Scope
+	if skillName != "" {
+		scope = &envstore.Scope{Kind: envstore.ScopeSkill, Name: skillName}
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", toolErrorDetails(
-			"SKILL_CONTEXT_INVALID",
-			"inspect active Skill directory: "+err.Error(),
-			"validation",
-			map[string]any{"skill": skill, "reason": err.Error()},
-		)
-	}
-	if !info.IsDir() {
-		return "", toolErrorDetails(
-			"SKILL_CONTEXT_INVALID",
-			"active Skill path is not a directory",
-			"validation",
-			map[string]any{"skill": skill, "path": path},
-		)
-	}
-	return path, nil
+	return svc.commandEnvOverridesScope(scope, extra)
 }
 
-func (svc *Service) commandEnvOverrides(skillName string, extra map[string]string) (map[string]string, error) {
+func (svc *Service) commandEnvOverridesScope(scope *envstore.Scope, extra map[string]string) (map[string]string, error) {
 	overrides := map[string]string{}
-	if skillName != "" {
-		values, err := svc.envs.Load(envstore.Scope{Kind: envstore.ScopeSkill, Name: skillName})
+	if scope != nil {
+		values, err := svc.envs.Load(*scope)
 		if err != nil {
-			return nil, toolErrorDetails("SKILL_ENV_INVALID", "load Skill environment", "validation", map[string]any{"skill": skillName, "reason": err.Error()})
+			return nil, toolErrorDetails("SKILL_ENV_INVALID", "load Skill environment", "validation", map[string]any{"skill": scope.Name, "reason": err.Error()})
 		}
 		for key, value := range values {
+			if config.IsReservedCommandEnvironmentKey(key) {
+				return nil, toolErrorDetails("SKILL_ENV_INVALID", reservedSkillEnvironmentError(key).Error(), "validation", map[string]any{"skill": scope.Name, "key": key})
+			}
 			setPlatformCommandEnv(overrides, key, value)
 		}
 	}
 	for key, value := range extra {
 		if err := envstore.ValidateKey(key); err != nil {
 			return nil, toolErrorDetails("INVALID_ENV_NAME", err.Error(), "validation", map[string]any{"key": key})
+		}
+		if config.IsReservedCommandEnvironmentKey(key) {
+			return nil, toolErrorDetails("INVALID_ENV_NAME", reservedSkillEnvironmentError(key).Error(), "validation", map[string]any{"key": key})
 		}
 		setPlatformCommandEnv(overrides, key, value)
 	}
@@ -160,8 +161,6 @@ func buildWSLCommandArgs(distribution, workdir, command string) []string {
 	return append(args, "--exec", "bash", "-lc", command)
 }
 
-// buildWSLProcessEnv 避免把环境变量值暴露在 Windows 命令行中。
-// WSLENV 只携带变量名，wsl.exe 从自身进程环境读取对应值并传入 Linux。
 func buildWSLProcessEnv(base []string, forwarded map[string]string) []string {
 	values := make(map[string]string, len(base)+len(forwarded)+1)
 	names := make(map[string]string, len(base)+len(forwarded)+1)

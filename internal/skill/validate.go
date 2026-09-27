@@ -13,10 +13,6 @@ func (m *Manager) Validate(ctx context.Context, req ValidateRequest) (ValidateRe
 	if strings.TrimSpace(req.Source) == "" {
 		return ValidateResult{}, packageError(ErrInvalidPackage, "source", errors.New("source is required"))
 	}
-	maxBytes := req.MaxBytes
-	if maxBytes <= 0 {
-		maxBytes = m.MaxDownload
-	}
 	work, err := m.State.TempPath("validate")
 	if err != nil {
 		return ValidateResult{}, packageError(ErrInstallFailed, "temp", err)
@@ -24,14 +20,14 @@ func (m *Manager) Validate(ctx context.Context, req ValidateRequest) (ValidateRe
 	defer cleanupWorkingDirectory(work)
 
 	result := ValidateResult{Source: safeSourceLabel(req.Source), Issues: make([]ValidateIssue, 0)}
-	packageDir, digest, err := m.prepareSource(ctx, req.Source, work, maxBytes)
+	packageDir, sourceDigest, err := m.prepareSource(ctx, req.Source, work, m.MaxDownload, m.MaxFiles)
 	if err != nil {
 		result.addIssue(err)
 		return result, nil
 	}
-	result.Digest = digest
-	if expected := normalizeDigest(req.DigestSHA256); expected != "" && expected != digest {
-		result.addIssue(packageError(ErrDigestMismatch, "digest", fmt.Errorf("expected %s, got %s", expected, digest)))
+	result.SourceDigest = sourceDigest
+	if expected := normalizeDigest(req.DigestSHA256); expected != "" && expected != sourceDigest {
+		result.addIssue(packageError(ErrDigestMismatch, "digest", fmt.Errorf("expected %s, got %s", expected, sourceDigest)))
 	}
 	if err := ValidatePackage(packageDir); err != nil {
 		result.addIssue(err)
@@ -41,6 +37,11 @@ func (m *Manager) Validate(ctx context.Context, req ValidateRequest) (ValidateRe
 		result.addIssue(err)
 	} else {
 		result.Document = doc
+	}
+	if digest, digestErr := digestPackageContent(packageDir); digestErr != nil {
+		result.addIssue(packageError(ErrInvalidPackage, "content_digest", digestErr))
+	} else {
+		result.ContentDigest = digest
 	}
 	result.Valid = len(result.Issues) == 0
 	return result, nil

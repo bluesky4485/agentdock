@@ -10,7 +10,9 @@
 | `AGENTDOCK_PORT` | MCP/HTTP 监听端口，默认 8765 | Desktop 设置、Linux env、Docker environment |
 | `AGENTDOCK_AUTH_TOKEN` | Bearer Token | 安装器、平台受保护凭据或容器 secret/env |
 | `AGENTDOCK_LOG_LEVEL` | `debug` / `info` / `warn` / `error` | Desktop 设置、Linux env、Docker environment |
-| `AGENTDOCK_MCP_APPS_ENABLED` | 是否启用 MCP Apps UI，默认启用 | Desktop 设置或启动环境 |
+| `AGENTDOCK_MCP_APPS_MODE` | 聊天卡片模式：`full` / `compact` / `off`，默认 `full` | Desktop 设置或启动环境 |
+
+旧的 `AGENTDOCK_MCP_APPS_ENABLED` 仅用于升级兼容：新变量未设置时，`false` 映射为 `off`，其他情况映射为 `full`。新版配置只写 `AGENTDOCK_MCP_APPS_MODE`。
 | `AGENTDOCK_BROWSER_ENABLED` | 是否启用浏览器能力 | Desktop 设置或启动环境 |
 | `AGENTDOCK_BROWSER_EXECUTABLE_PATH` | 显式浏览器可执行文件 | Docker/服务器/高级运行环境 |
 | `AGENTDOCK_BROWSER_CDP_URL` | 复用已有 Chromium 的 CDP 地址 | Desktop 设置或启动环境 |
@@ -32,9 +34,10 @@
 | `AGENTDOCK_OAUTH_ACCESS_TOKEN_TTL` | OAuth Access Token 有效期 | Desktop/高级启动配置 |
 | `AGENTDOCK_STDIO` | 是否启用 stdio 运行模式 | 直接启动/集成场景 |
 | `AGENTDOCK_TRUSTED_PROXY_CIDRS` | 受信任反向代理网段 | 服务器/反代场景 |
-| `AGENTDOCK_INSTRUCTIONS_FILE` | 额外 Instructions 文件 | 高级启动配置 |
 
 Coding Agent 的发现、Codex / Claude Adapter 安装、Grok / OpenCode / AtomCode / Kimi 原生 ACP 模式、平台配置和验证流程见 `acp.md`。
+
+项目规则不通过环境变量配置：全局规则固定为 `~/.agentdock/AGENTS.md`，工作区规则与 `.agents/skills` 索引通过 `workspace_context` 按请求读取。
 
 ## 重要边界
 

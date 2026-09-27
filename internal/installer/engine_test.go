@@ -11,6 +11,8 @@ import (
 
 	"github.com/uvwt/agentdock/internal/desktopruntime"
 	"github.com/uvwt/agentdock/internal/envstore"
+	skills "github.com/uvwt/agentdock/internal/skill"
+	skillstate "github.com/uvwt/agentdock/internal/skill/state"
 	"github.com/uvwt/agentdock/internal/updateengine"
 )
 
@@ -1140,6 +1142,70 @@ func TestDeferCommitStaysTrialUntilCommit(t *testing.T) {
 	}
 }
 
+func TestCommitCanProjectAdapterHealthAfterTransactionAlreadyCommitted(t *testing.T) {
+	root := t.TempDir()
+	installRoot := filepath.Join(root, "install")
+	runtimeRoot := filepath.Join(root, "runtime")
+	store, err := NewStore(runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	transaction := Transaction{
+		SchemaVersion: SchemaVersion,
+		TransactionID: "adapter-health-commit",
+		Platform:      runtime.GOOS,
+		Action:        ActionInstall,
+		TargetVersion: "v1.0.0",
+		ActiveVersion: "v1.0.0",
+		State:         updateengine.StateCommitted,
+		Phase:         PhaseCommit,
+		InstallRoot:   installRoot,
+		RuntimeRoot:   runtimeRoot,
+		StartedAt:     now,
+		UpdatedAt:     now,
+		CompletedAt:   &now,
+	}
+	if err := store.WriteTransaction(transaction); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteResult(Result{
+		SchemaVersion: SchemaVersion,
+		TransactionID: transaction.TransactionID,
+		Platform:      transaction.Platform,
+		Action:        ActionInstall,
+		State:         updateengine.StateCommitted,
+		Phase:         PhaseCommit,
+		Version:       "v1.0.0",
+		ActiveVersion: "v1.0.0",
+		Healthy:       false,
+		StartedAt:     now,
+		CompletedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := (Engine{}).Run(context.Background(), Request{
+		Action:        ActionCommit,
+		InstallRoot:   installRoot,
+		RuntimeRoot:   runtimeRoot,
+		TransactionID: transaction.TransactionID,
+		MarkHealthy:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Healthy || result.State != updateengine.StateCommitted {
+		t.Fatalf("commit result=%#v, want committed healthy result", result)
+	}
+	persisted, err := store.ReadResult(transaction.TransactionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.Healthy {
+		t.Fatal("adapter-confirmed health was not persisted after committed transaction")
+	}
+}
 func TestAbandonTrialAndRollbackFailed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("abandon is exercised on Unix CI")
@@ -1502,6 +1568,27 @@ func TestExistingVersionReadsCommittedGenerationPointer(t *testing.T) {
 	got := existingVersion(Request{InstallRoot: installRoot, RuntimeRoot: filepath.Join(root, "missing-installer-store")})
 	if got != "v0.8.3" {
 		t.Fatalf("existingVersion=%s, want v0.8.3 from active-version.json", got)
+	}
+}
+
+func TestShouldStartTunnelInTransaction(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		req  Request
+		want bool
+	}{
+		{name: "quick direct", req: Request{StartService: true, TunnelMode: "quick"}, want: true},
+		{name: "named direct", req: Request{StartService: true, TunnelMode: "named"}, want: true},
+		{name: "deferred quick belongs to adapter", req: Request{StartService: true, TunnelMode: "quick", DeferCommit: true}, want: false},
+		{name: "deferred named belongs to adapter", req: Request{StartService: true, TunnelMode: "named", DeferCommit: true}, want: false},
+		{name: "core only", req: Request{StartService: true, TunnelMode: "none"}, want: false},
+		{name: "service not started", req: Request{TunnelMode: "quick"}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldStartTunnelInTransaction(test.req); got != test.want {
+				t.Fatalf("shouldStartTunnelInTransaction()=%v, want %v", got, test.want)
+			}
+		})
 	}
 }
 
@@ -2199,5 +2286,172 @@ exit 2
 	}
 	if len(journal.Services) != 2 || !journal.Services[0].WasActive || !journal.Services[1].WasActive {
 		t.Fatalf("runtime snapshot=%+v", journal.Services)
+	}
+}
+
+func TestInstallCommitFinalizesPreparedLegacySkillMigration(t *testing.T) {
+	root := t.TempDir()
+	installRoot := filepath.Join(root, "install")
+	runtimeRoot := filepath.Join(root, "runtime")
+	home := filepath.Join(root, "home", ".agentdock")
+	prepareLegacySkillMigrationForInstallerTest(t, home)
+
+	store, err := NewStore(runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction, err := newTransaction(Request{
+		Action:        ActionInstall,
+		InstallRoot:   installRoot,
+		RuntimeRoot:   runtimeRoot,
+		AgentDockHome: home,
+		Version:       "v0.8.9",
+	}, runtime.GOOS, "v0.8.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction.State = updateengine.StateTrial
+	transaction.Phase = PhaseCommit
+	if err := store.WriteTransaction(transaction); err != nil {
+		t.Fatal(err)
+	}
+	result := resultFromTransaction(transaction)
+	result.State = updateengine.StateTrial
+	result.Phase = PhaseCommit
+	if err := store.WriteResult(result); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, legacy := range []string{"skill-store", "skill-data"} {
+		if _, err := os.Stat(filepath.Join(home, legacy)); err != nil {
+			t.Fatalf("legacy root %s missing before commit: %v", legacy, err)
+		}
+	}
+	committed, err := (Engine{}).Run(context.Background(), Request{
+		Action:        ActionCommit,
+		InstallRoot:   installRoot,
+		RuntimeRoot:   runtimeRoot,
+		TransactionID: transaction.TransactionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed.State != updateengine.StateCommitted {
+		t.Fatalf("commit state=%s", committed.State)
+	}
+	for _, legacy := range []string{"skill-store", "skill-data"} {
+		if _, err := os.Stat(filepath.Join(home, legacy)); !os.IsNotExist(err) {
+			t.Fatalf("legacy root %s survived committed installer transaction: %v", legacy, err)
+		}
+	}
+	backups, err := filepath.Glob(filepath.Join(home, "migrations", "skill-model-legacy-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("legacy backup count=%d paths=%v", len(backups), backups)
+	}
+}
+
+func TestInstallAbandonKeepsPreparedLegacySkillRootsForOldBinary(t *testing.T) {
+	root := t.TempDir()
+	installRoot := filepath.Join(root, "install")
+	runtimeRoot := filepath.Join(root, "runtime")
+	home := filepath.Join(root, "home", ".agentdock")
+	prepareLegacySkillMigrationForInstallerTest(t, home)
+
+	store, err := NewStore(runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction, err := newTransaction(Request{
+		Action:        ActionInstall,
+		InstallRoot:   installRoot,
+		RuntimeRoot:   runtimeRoot,
+		AgentDockHome: home,
+		Version:       "v0.8.9",
+	}, runtime.GOOS, "v0.8.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction.State = updateengine.StateTrial
+	transaction.Phase = PhaseCommit
+	if err := store.WriteTransaction(transaction); err != nil {
+		t.Fatal(err)
+	}
+	result := resultFromTransaction(transaction)
+	result.State = updateengine.StateTrial
+	result.Phase = PhaseCommit
+	if err := store.WriteResult(result); err != nil {
+		t.Fatal(err)
+	}
+
+	rolledBack, err := (Engine{}).Run(context.Background(), Request{
+		Action:        ActionAbandon,
+		InstallRoot:   installRoot,
+		RuntimeRoot:   runtimeRoot,
+		TransactionID: transaction.TransactionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack.State != updateengine.StateRolledBack {
+		t.Fatalf("abandon state=%s", rolledBack.State)
+	}
+	for _, legacy := range []string{"skill-store", "skill-data"} {
+		if _, err := os.Stat(filepath.Join(home, legacy)); err != nil {
+			t.Fatalf("legacy root %s was removed by rollback: %v", legacy, err)
+		}
+	}
+	// Rollback does not need to reverse-rename anything: the legacy roots were
+	// never moved. Current-layout copies stay pending so a later retry can
+	// resynchronize them from the still-authoritative legacy source.
+	for _, current := range []string{
+		filepath.Join(home, "skills", "demo-skill"),
+		filepath.Join(home, "data", "skills", "demo-skill"),
+		filepath.Join(home, "migrations", legacyMigrationPendingFileForInstallerTest),
+	} {
+		if _, err := os.Stat(current); err != nil {
+			t.Fatalf("installer rollback lost pending migration path %s: %v", current, err)
+		}
+	}
+}
+
+const legacyMigrationPendingFileForInstallerTest = "skill-model-pending.json"
+
+func prepareLegacySkillMigrationForInstallerTest(t *testing.T, home string) {
+	t.Helper()
+	state, err := skillstate.New(filepath.Join(home, "skills"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := skills.New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRoot := filepath.Join(home, "skill-store", "installed", "demo-skill", "1.0.0")
+	if err := os.MkdirAll(legacyRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := "---\nname: demo-skill\ndescription: Legacy installer fixture.\nversion: 1.0.0\n---\n\n# Legacy\n"
+	if err := os.WriteFile(filepath.Join(legacyRoot, "SKILL.md"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateRoot := filepath.Join(home, "skill-store", "state")
+	if err := os.MkdirAll(stateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateRoot, "demo-skill.json"), []byte(`{"active_version":"1.0.0"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyData := filepath.Join(home, "skill-data", "demo-skill")
+	if err := os.MkdirAll(legacyData, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyData, "state.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skills.MigrateLegacyLayout(context.Background(), home, manager); err != nil {
+		t.Fatal(err)
 	}
 }

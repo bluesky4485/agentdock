@@ -1,7 +1,6 @@
 ---
 name: agentdock-user-guide
 description: 当用户询问 AgentDock 是什么、如何使用、配置在哪里、不同平台或安装方式怎样修改配置并生效、如何重启或验证配置、如何发现并配置 Codex/Claude/Grok/OpenCode/AtomCode/Kimi 等 Coding Agent 的 ACP，以及常见运行问题时使用；覆盖 macOS Desktop、Windows Desktop、Linux 服务、Docker 和直接运行二进制，不用于源码开发与贡献流程。
-version: 1.3.0
 ---
 
 # AgentDock User Guide
@@ -49,7 +48,7 @@ AgentDock 的用户文档独立维护在 [uvwt/agentdock-docs](https://github.co
 
 ### AgentDock Skills
 
-[AgentDock Skills](https://github.com/uvwt/agentdock-skills) 是 AgentDock 官方与社区 Skill 的源码、测试和发布仓库。普通业务集成、个人效率工具和社区 Skill 在这里独立维护和版本化，避免与 AgentDock Core 版本强耦合。
+[AgentDock Skills](https://github.com/uvwt/agentdock-skills) 是 AgentDock 官方与社区 Skill 的源码与测试仓库。普通业务集成、个人效率工具和社区 Skill 在这里独立维护，内容演进由 Git 历史追踪，避免与 AgentDock Core 版本强耦合。
 
 AgentDock 主仓库的 `core-skills/` 只保留必须随 AgentDock 运行时一起安装和升级的内置核心 Skill；需要查找、阅读、贡献或发布其他 Skill 时，应优先查看 AgentDock Skills 仓库。安装第三方或社区 Skill 前仍应进行来源和安全审查。
 
@@ -81,7 +80,7 @@ AgentDock 主仓库的 `core-skills/` 只保留必须随 AgentDock 运行时一�
 - “配置文件在哪里”“这个配置怎么改”“改完为什么没生效”；
 - macOS、Windows、Linux、Docker、直接运行二进制之间的配置差异；
 - Core 的启动、停止、重启、健康检查和配置生效验证；
-- 浏览器、MCP Apps UI、端口、日志、OAuth 等运行配置的入口；
+- 浏览器、聊天卡片、端口、日志、OAuth 等运行配置的入口；
 - 发现本机已有 Codex、Claude、Grok、OpenCode、AtomCode、Kimi 等 Coding Agent，补齐缺失 ACP Adapter，并把 ACP 正确接入 AgentDock；
 - 多台 AgentDock 设备中，确认应该修改哪一台设备的运行配置。
 
@@ -166,7 +165,7 @@ AgentDock Core 在启动时从**进程环境**读取运行配置。不同发行�
 至少验证两层：
 
 1. **进程层**：Core 已运行，`/healthz` 正常，或平台 service status 显示 healthy；
-2. **行为层**：本次修改对应能力真的变化，例如端口、MCP Apps UI、browser、ACP 或子进程环境行为符合预期。
+2. **行为层**：本次修改对应能力真的变化，例如端口、聊天卡片、browser、ACP 或子进程环境行为符合预期。
 
 如果当前对话连接的就是被重启的 AgentDock，连接可能短暂中断；恢复后重新读取 `agentdock_context` 或实际状态，不要把“命令执行成功”当成“新配置已经生效”。
 
