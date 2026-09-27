@@ -12,7 +12,7 @@ Open ChatGPT in your browser and manage multiple computers and servers from one 
 
 <a href="https://trendshift.io/repositories/136526?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-136526" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/136526/daily?language=Go" alt="uvwt%2Fagentdock | Trendshift" width="250" height="55"/></a>
 
-[Documentation](https://uvwt.github.io/agentdock-docs/) · [Download](https://github.com/uvwt/agentdock/releases) · [Community](https://qun.qq.com/universal-share/share?ac=1&authKey=Rp86bSzI7vqm87KoYlKawgsPZ440Ubhyezw6Qkgcn3JISwX3zXxsXkbS5598RrY5&busi_data=eyJncm91cENvZGUiOiIxMDgxMzM3MDE5IiwidG9rZW4iOiJ0Mlg1bUU1ZWtuZzF3SHJDT3pSaGsrOURIMlNYaXBlYllOUjNLZ1BUb1hzM2lJSTZjeVNldzU0ajl0SjRVZkx2IiwidWluIjoiMzIwMjA4ODAzMiJ9&data=W28mWvuqaLf_Fwnf0CgAJXuDs6l3A78V7AoWZnizPboCpKoQMzHzZ-UlluYo47U3tmIBHK2xIgWEVEJbTiGsPQ&svctype=4&tempid=h5_group_info)
+[Documentation](https://uvwt.github.io/agentdock-docs/) · [Download](https://github.com/uvwt/agentdock/releases) · [Code signing policy](./docs/code-signing-policy.md) · [Community](https://qun.qq.com/universal-share/share?ac=1&authKey=Rp86bSzI7vqm87KoYlKawgsPZ440Ubhyezw6Qkgcn3JISwX3zXxsXkbS5598RrY5&busi_data=eyJncm91cENvZGUiOiIxMDgxMzM3MDE5IiwidG9rZW4iOiJ0Mlg1bUU1ZWtuZzF3SHJDT3pSaGsrOURIMlNYaXBlYllOUjNLZ1BUb1hzM2lJSTZjeVNldzU0ajl0SjRVZkx2IiwidWluIjoiMzIwMjA4ODAzMiJ9&data=W28mWvuqaLf_Fwnf0CgAJXuDs6l3A78V7AoWZnizPboCpKoQMzHzZ-UlluYo47U3tmIBHK2xIgWEVEJbTiGsPQ&svctype=4&tempid=h5_group_info)
 
 [![CI](https://github.com/uvwt/agentdock/actions/workflows/ci.yml/badge.svg)](https://github.com/uvwt/agentdock/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/uvwt/agentdock?display_name=tag&logo=github)](https://github.com/uvwt/agentdock/releases)
@@ -123,9 +123,9 @@ AgentDock exposes tools over MCP Streamable HTTP. The exact client syntax varies
 
 Official and community Skill sources live in [uvwt/agentdock-skills](https://github.com/uvwt/agentdock-skills). This repository only keeps core Skills that must ship with the AgentDock runtime, including bootstrap/security Skills and the built-in `agentdock-user-guide` official user guide.
 
-- Validate, install, uninstall, activate, and roll back Skill packages
-- Stable, development, canary, and pinned release channels
-- Isolated environment variables and runtimes for each Skill
+- Install, update, and remove current managed Skill content with digest-based no-op and atomic replacement
+- Keep managed, shared, and workspace Skill sources distinct through host-issued `skill_ref` provenance
+- Isolate managed Skill environment variables and persistent data from package content
 - Register, enable, disable, refresh, and remove dynamic MCP servers
 - Streamable HTTP and stdio transports
 - Search tools, inspect schemas, and perform controlled calls

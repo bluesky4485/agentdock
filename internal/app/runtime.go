@@ -14,6 +14,7 @@ import (
 	"github.com/uvwt/agentdock/internal/envstore"
 	"github.com/uvwt/agentdock/internal/evolution"
 	mcpclient "github.com/uvwt/agentdock/internal/mcp/client"
+	pluginruntime "github.com/uvwt/agentdock/internal/plugin"
 	"github.com/uvwt/agentdock/internal/taskstate"
 	toolacp "github.com/uvwt/agentdock/internal/tool/acp"
 	toolbrowser "github.com/uvwt/agentdock/internal/tool/browser"
@@ -23,6 +24,7 @@ import (
 	toolfile "github.com/uvwt/agentdock/internal/tool/file"
 	toolmcp "github.com/uvwt/agentdock/internal/tool/mcp"
 	toolmedia "github.com/uvwt/agentdock/internal/tool/media"
+	toolplugin "github.com/uvwt/agentdock/internal/tool/plugin"
 	toolrecall "github.com/uvwt/agentdock/internal/tool/recall"
 	toolskill "github.com/uvwt/agentdock/internal/tool/skill"
 	tooltask "github.com/uvwt/agentdock/internal/tool/task"
@@ -40,6 +42,7 @@ type Runtime struct {
 	command        *toolcommand.Service
 	files          *toolfile.Service
 	dynamicMCP     *toolmcp.Service
+	plugins        *toolplugin.Service
 	media          *toolmedia.Service
 	browser        *toolbrowser.Service
 	recall         *toolrecall.Service
@@ -67,7 +70,11 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	skills, err := toolskill.New(cfg, ws, envs)
+	pluginManager, err := pluginruntime.NewManager(cfg.AgentDockHome)
+	if err != nil {
+		return nil, err
+	}
+	skills, err := toolskill.New(cfg, ws, envs, pluginManager)
 	if err != nil {
 		return nil, err
 	}
@@ -86,9 +93,56 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 		toolNames: toolNames, toolValidators: toolValidators,
 		commandCtx: commandCtx, commandCancel: commandCancel,
 	}
-	runtime.command = toolcommand.New(func() config.Config { return runtime.cfg }, ws, envs, skills.ResolveActive, runtime.commandExecutionContext)
+	runtime.command = toolcommand.New(func() config.Config { return runtime.cfg }, ws, envs, func(ctx context.Context, skillRef string) (toolcommand.SkillLease, error) {
+		resolved, release, err := skills.Acquire(ctx, skillRef)
+		if err != nil {
+			return toolcommand.SkillLease{}, err
+		}
+		var envScope *envstore.Scope
+		skillDataDir := ""
+		runtimeEnv := map[string]string(nil)
+		switch resolved.SourceType {
+		case "managed":
+			scope := envstore.Scope{Kind: envstore.ScopeSkill, Name: resolved.Name}
+			envScope = &scope
+			skillDataDir, err = config.SkillDataDir(cfg, resolved.Name)
+			if err != nil {
+				release()
+				return toolcommand.SkillLease{}, fmt.Errorf("resolve managed Skill data directory: %w", err)
+			}
+		case "plugin":
+			scope := envstore.Scope{Kind: envstore.ScopePluginSkill, Plugin: resolved.PluginName, Name: resolved.Name}
+			envScope = &scope
+			skillDataDir, err = config.PluginSkillDataDir(cfg, resolved.PluginName, resolved.Name)
+			if err != nil {
+				release()
+				return toolcommand.SkillLease{}, fmt.Errorf("resolve Plugin Skill data directory: %w", err)
+			}
+			pluginDataDir, dataErr := pluginManager.EnsureDataDir(resolved.PluginName)
+			if dataErr != nil {
+				release()
+				return toolcommand.SkillLease{}, fmt.Errorf("prepare Plugin data directory: %w", dataErr)
+			}
+			runtimeEnv = map[string]string{config.PluginDataDirEnvKey: pluginDataDir}
+		}
+		return toolcommand.SkillLease{
+			Name: resolved.Name, Root: resolved.Root, EnvScope: envScope,
+			SkillDataDir: skillDataDir, RuntimeEnv: runtimeEnv, Release: release,
+		}, nil
+	}, runtime.commandExecutionContext)
 	runtime.files = toolfile.New(ws, skills.ResolveResource, runtime.command.CommandEnv)
 	runtime.dynamicMCP = toolmcp.New(mcpClients, envs)
+	if err := runtime.configureMCPOAuthCallbacks(); err != nil {
+		_ = runtime.dynamicMCP.Close()
+		commandCancel()
+		return nil, err
+	}
+	runtime.plugins = toolplugin.New(cfg, pluginManager, mcpClients, envs, ws)
+	if err := runtime.plugins.ReconcileMCP(); err != nil {
+		_ = runtime.dynamicMCP.Close()
+		commandCancel()
+		return nil, fmt.Errorf("initialize Plugin MCP runtime: %w", err)
+	}
 	runtime.media = toolmedia.New(cfg, ws, runtime.command.InternalCommandEnv)
 	runtime.browser = toolbrowser.New(
 		toolbrowser.Config{AgentDockHome: cfg.AgentDockHome, ExecutablePath: cfg.BrowserExecutablePath, CDPURL: cfg.BrowserCDPURL, ReuseExistingCDP: cfg.BrowserReuseExistingCDP},
@@ -176,6 +230,9 @@ func (r *Runtime) Close() error {
 			if err := r.dynamicMCP.Close(); err != nil {
 				closeErrors = append(closeErrors, fmt.Errorf("close dynamic MCP clients: %w", err))
 			}
+		}
+		if r.plugins != nil {
+			r.plugins.ReleaseMCPLeases()
 		}
 		r.closeErr = errors.Join(closeErrors...)
 	})

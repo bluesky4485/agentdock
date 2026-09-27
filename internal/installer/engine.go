@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/uvwt/agentdock/internal/config"
+	"github.com/uvwt/agentdock/internal/desktopruntime"
 	"github.com/uvwt/agentdock/internal/fs/processlock"
 	skills "github.com/uvwt/agentdock/internal/skill"
 	skillbundle "github.com/uvwt/agentdock/internal/skill/bundle"
@@ -65,7 +66,7 @@ func (engine Engine) Run(ctx context.Context, request Request) (Result, error) {
 	case ActionAbandon:
 		return engine.abandon(store, request)
 	case ActionCommit:
-		return engine.commit(store, request)
+		return engine.commit(ctx, store, request)
 	case ActionRepair:
 		request.Channel = "repair"
 		if recovered, err := engine.recoverInterrupted(ctx, store, request); err != nil {
@@ -135,10 +136,12 @@ func (engine Engine) recoverInterrupted(ctx context.Context, store *Store, reque
 			if readErr != nil {
 				current = resultFromTransaction(transaction)
 			}
-			if _, err := commitPreparedInstall(store, transaction, current); err != nil {
+			completed, err := commitPreparedInstall(store, transaction, current)
+			if err != nil {
 				return current, err
 			}
-			return Result{}, nil
+			completed = finalizeCommittedSkillMigration(ctx, store, request, transaction, completed, "")
+			return completed, nil
 		}
 	}
 
@@ -310,11 +313,15 @@ func (engine Engine) install(ctx context.Context, store *Store, request Request)
 			}
 			host, port := resolveListenAddress(request)
 			endpoint := healthURL(host, port)
+			healthTimeout := 45 * time.Second
+			if runtimeGOOS() == "windows" {
+				healthTimeout = desktopruntime.WindowsCoreStartTimeout
+			}
 			var healthErr error
 			if runtimeGOOS() != "darwin" && request.Version != "unknown" {
-				healthErr = updateengine.WaitForVersion(ctx, []string{endpoint}, strings.TrimPrefix(request.Version, "v"), 45*time.Second)
+				healthErr = updateengine.WaitForVersion(ctx, []string{endpoint}, strings.TrimPrefix(request.Version, "v"), healthTimeout)
 			}
-			if waitErr := waitHealthyWithProbe(ctx, request, endpoint, 45*time.Second); waitErr != nil {
+			if waitErr := waitHealthyWithProbe(ctx, request, endpoint, healthTimeout); waitErr != nil {
 				if healthErr != nil {
 					waitErr = errors.Join(healthErr, waitErr)
 				}
@@ -334,18 +341,17 @@ func (engine Engine) install(ctx context.Context, store *Store, request Request)
 		}
 	}
 
-	if request.StartService && (request.TunnelMode == "quick" || request.TunnelMode == "named") {
+	if shouldStartTunnelInTransaction(request) {
 		transaction.Phase = PhaseTunnel
 		if err := store.WriteTransaction(transaction); err != nil {
 			return fail(PhaseTunnel, err, staged)
 		}
+		// Core health 是安装/更新的提交边界。Tunnel 公网就绪依赖外部网络和 Cloudflare 状态，
+		// 不能因此回滚健康的 Core；但启动本地 Tunnel 宿主仍属于可控步骤，如果连宿主都无法
+		// 调度，应保留 warning，避免把“公网尚未真正启动”误报成完整成功。
 		if err := startTunnelServices(ctx, request, staged.Journal); err != nil {
-			return fail(PhaseTunnel, err, staged)
-		}
-		if err := waitTunnelReady(ctx, request, 45*time.Second); err != nil {
-			return fail(PhaseTunnel, err, staged)
-		}
-		if request.TunnelMode == "quick" {
+			result.Warnings = append(result.Warnings, "Tunnel startup could not be scheduled: "+err.Error())
+		} else if request.TunnelMode == "quick" {
 			if publicURL := readQuickTunnelURL(request.RuntimeRoot); publicURL != "" {
 				result.PublicURL = publicURL
 			}
@@ -377,7 +383,19 @@ func (engine Engine) install(ctx context.Context, store *Store, request Request)
 	if err := store.WriteTransaction(transaction); err != nil {
 		return fail(PhaseCommit, err, staged)
 	}
-	return commitPreparedInstall(store, transaction, result)
+	completed, err := commitPreparedInstall(store, transaction, result)
+	if err != nil {
+		return result, err
+	}
+	completed = finalizeCommittedSkillMigration(ctx, store, request, transaction, completed, staged.LiveBinary)
+	return completed, nil
+}
+
+func shouldStartTunnelInTransaction(request Request) bool {
+	if !request.StartService || request.DeferCommit {
+		return false
+	}
+	return request.TunnelMode == "quick" || request.TunnelMode == "named"
 }
 
 func installPhaseMayHaveMutatedFiles(phase Phase) bool {
@@ -474,7 +492,7 @@ func bindInstallTransaction(store *Store, request Request) (Transaction, Result,
 	return transaction, current, nil
 }
 
-func (engine Engine) commit(store *Store, request Request) (Result, error) {
+func (engine Engine) commit(ctx context.Context, store *Store, request Request) (Result, error) {
 	transaction, current, err := bindInstallTransaction(store, request)
 	if err != nil {
 		return Result{}, fmt.Errorf("commit: %w", err)
@@ -482,17 +500,31 @@ func (engine Engine) commit(store *Store, request Request) (Result, error) {
 	if transaction.Action == ActionUninstall {
 		current.Warnings = removeWarning(current.Warnings, "windows_adapter_pending")
 	}
+	if request.MarkHealthy {
+		current.Healthy = true
+	}
 	if transaction.State == updateengine.StateCommitted && current.TransactionID == transaction.TransactionID {
 		if err := commitWindowsActivePointer(transaction.InstallRoot, transaction.TransactionID); err != nil {
 			return current, err
 		}
 		discardJournal(store.Root(), transaction.TransactionID)
+		if request.MarkHealthy {
+			if err := store.WriteResult(current); err != nil {
+				return current, err
+			}
+		}
+		current = finalizeCommittedSkillMigration(ctx, store, request, transaction, current, "")
 		return current, nil
 	}
 	if transaction.State != updateengine.StateTrial {
 		return current, fmt.Errorf("install commit 只能结束 trial，当前 state=%s transaction=%s", transaction.State, transaction.TransactionID)
 	}
-	return commitPreparedInstall(store, transaction, current)
+	completed, err := commitPreparedInstall(store, transaction, current)
+	if err != nil {
+		return current, err
+	}
+	completed = finalizeCommittedSkillMigration(ctx, store, request, transaction, completed, "")
+	return completed, nil
 }
 
 func (engine Engine) abandon(store *Store, request Request) (Result, error) {
@@ -665,10 +697,7 @@ func runtimeGOOS() string {
 }
 
 func bootstrapSkills(ctx context.Context, request Request, executable, bundleDir string) error {
-	home := strings.TrimSpace(request.AgentDockHome)
-	if home == "" && request.DataDir != "" {
-		home = filepath.Join(request.DataDir, ".agentdock")
-	}
+	home := skillMigrationHome(request)
 	if home == "" {
 		return nil
 	}
@@ -689,11 +718,7 @@ func bootstrapSkills(ctx context.Context, request Request, executable, bundleDir
 	if err := cfg.Normalize(); err != nil {
 		return err
 	}
-	stateDir, err := config.SkillStateDir(cfg)
-	if err != nil {
-		return err
-	}
-	state, err := skillstate.New(stateDir)
+	state, err := skillstate.New(config.SkillDir(cfg))
 	if err != nil {
 		return err
 	}
@@ -701,8 +726,65 @@ func bootstrapSkills(ctx context.Context, request Request, executable, bundleDir
 	if err != nil {
 		return err
 	}
+	if _, err := skills.MigrateLegacyLayoutForUpdate(ctx, cfg.AgentDockHome, manager); err != nil {
+		return err
+	}
 	_, err = skillbundle.Bootstrap(ctx, state, manager, bundleDir)
 	return err
+}
+
+func skillMigrationHome(request Request) string {
+	home := strings.TrimSpace(request.AgentDockHome)
+	if home == "" && strings.TrimSpace(request.DataDir) != "" {
+		home = filepath.Join(request.DataDir, ".agentdock")
+	}
+	return home
+}
+
+func finalizeSkillMigration(ctx context.Context, request Request, executable, home string) error {
+	handled, err := tryFinalizeSkillMigrationAsServiceUser(ctx, request, executable, home)
+	if handled || err != nil {
+		return err
+	}
+	_, err = skills.FinalizeLegacyMigration(home)
+	return err
+}
+
+// finalizeCommittedSkillMigration 只能在 installer 的 durable commit 之后调用。
+// 失败只意味着旧 roots 继续作为 rollback bridge 保留，不能把已经 committed 的
+// 安装重新伪装成失败；warning 会回写 Result，供后续 repair/commit 重试收口。
+func finalizeCommittedSkillMigration(
+	ctx context.Context,
+	store *Store,
+	request Request,
+	transaction Transaction,
+	result Result,
+	executable string,
+) Result {
+	if transaction.Action == ActionUninstall {
+		return result
+	}
+	if strings.TrimSpace(request.AgentDockHome) == "" {
+		request.AgentDockHome = transaction.AgentDockHome
+	}
+	if strings.TrimSpace(request.ServiceUser) == "" {
+		request.ServiceUser = transaction.ServiceUser
+	}
+	if strings.TrimSpace(request.InstallRoot) == "" {
+		request.InstallRoot = transaction.InstallRoot
+	}
+	home := skillMigrationHome(request)
+	if home == "" {
+		return result
+	}
+	if strings.TrimSpace(executable) == "" {
+		executable = unixLiveBinary(request)
+	}
+	if err := finalizeSkillMigration(ctx, request, executable, home); err != nil {
+		result.Warnings = append(result.Warnings, "legacy_skill_migration_pending: "+err.Error())
+		_ = store.WriteResult(result)
+	}
+	return result
 }
 
 func verifyRequest(request Request) error {

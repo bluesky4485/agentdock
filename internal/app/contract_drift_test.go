@@ -69,6 +69,8 @@ func TestTypedToolRequestFieldsMatchPublishedSchemas(t *testing.T) {
 		exact      bool
 		allowExtra []string
 	}{
+		{name: "agentdock_context", request: agentDockContextRequest{}, exact: true},
+		{name: "workspace_context", request: workspaceContextRequest{}, exact: true},
 		{name: toolfile.ToolReadFile, request: toolfile.ReadRequest{}, exact: true, allowExtra: []string{"runtime", "wsl_distribution"}},
 		{name: toolfile.ToolListDir, request: toolfile.ListRequest{}, exact: true, allowExtra: []string{"runtime", "wsl_distribution"}},
 		{name: toolfile.ToolSearchText, request: toolfile.SearchRequest{}, exact: true, allowExtra: []string{"runtime", "wsl_distribution"}},
@@ -82,7 +84,7 @@ func TestTypedToolRequestFieldsMatchPublishedSchemas(t *testing.T) {
 		{name: toolacp.ToolSession, request: toolacp.SessionRequest{}, exact: true},
 		{name: toolacp.ToolPrompt, request: toolacp.PromptRequest{}, exact: true},
 		{name: toolacp.ToolInteraction, request: toolacp.InteractionRequest{}, exact: true},
-		{name: toolskill.ToolPackage, request: toolskill.PackageRequest{}, exact: true},
+		{name: toolskill.ToolManage, request: toolskill.ManageRequest{}, exact: true},
 		{name: toolmcp.ToolManage, request: toolmcp.ManageRequest{}, exact: true},
 		{name: toolmcp.ToolSearch, request: toolmcp.SearchRequest{}, exact: true},
 		{name: toolmcp.ToolInspect, request: toolmcp.InspectRequest{}, exact: true},

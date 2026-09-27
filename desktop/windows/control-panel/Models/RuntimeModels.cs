@@ -88,8 +88,12 @@ public sealed class ControlPanelSettings
     [JsonPropertyName("oauth_access_token_ttl")]
     public string OAuthAccessTokenTtl { get; set; } = "";
 
+    [JsonPropertyName("mcp_apps_mode")]
+    public string McpAppsMode { get; set; } = "";
+
     [JsonPropertyName("mcp_apps_enabled")]
-    public bool McpAppsEnabled { get; set; } = true;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? LegacyMcpAppsEnabled { get; set; }
 
     [JsonPropertyName("browser_enabled")]
     public bool BrowserEnabled { get; set; }
@@ -213,8 +217,8 @@ internal sealed class UpdateProgressEvent
     [JsonPropertyName("asset")]
     public string Asset { get; set; } = "";
 
-    [JsonPropertyName("bytes_read")]
-    public long? BytesRead { get; set; }
+    [JsonPropertyName("bytes")]
+    public long? Bytes { get; set; }
 
     [JsonPropertyName("total_bytes")]
     public long? TotalBytes { get; set; }
