@@ -72,7 +72,7 @@ if (-not $expectedCertificate -and $VerifyOnly) {
         if ($signature.SignerCertificate) {
             throw "WINDOWS_SIGNING_CERT_BASE64 is not configured, but $item already carries an Authenticode signature."
         }
-        Write-Host "Skipping Authenticode verification for $item: no signing certificate configured (unsigned release build)."
+        Write-Host "Skipping Authenticode verification for ${item}: no signing certificate configured (unsigned release build)."
     }
     exit 0
 }
