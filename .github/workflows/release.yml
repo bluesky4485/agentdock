@@ -661,27 +661,10 @@ jobs:
           if actual_version != expected_version:
               raise SystemExit(f"release tag {tag} does not match buildinfo.Version {actual_version}")
 
-          # Docker Compose / .env.example 不作为 Release 资产发布；
-          # 文档直接引用仓库 main 或对应 git tag 上的源文件。
-          installer_entry = Path("dist/install.sh")
-          installer_text = installer_entry.read_text()
-          default_base = "https://github.com/uvwt/agentdock/releases/latest/download"
-          release_base = f"https://github.com/{repository}/releases/download/{tag}"
-          if default_base not in installer_text:
-              raise SystemExit("install.sh default release base was not found")
-          installer_entry.write_text(installer_text.replace(default_base, release_base, 1))
-
-          # install.ps1 的版本化安装与 latest 升级路径都硬编码上游仓库；fork 发布的
-          # 安装脚本必须指向自己仓库的 release，否则用户端与发布验证都会 404。
-          # 因此这里不保留 install.ps1 的 Git blob 一致性（verify 阶段改为 URL 断言）。
-          powershell_entry = Path("dist/install.ps1")
-          powershell_text = powershell_entry.read_text()
-          powershell_default_base = "https://github.com/uvwt/agentdock/releases"
-          if powershell_default_base not in powershell_text:
-              raise SystemExit("install.ps1 default release base was not found")
-          powershell_entry.write_text(
-              powershell_text.replace(powershell_default_base, f"https://github.com/{repository}/releases")
-          )
+          # fork 与上游的差异：scripts/install/install.{sh,ps1} 的默认 release base
+          # 在源码中直接指向本 fork（bluesky4485/agentdock），因此上游的发布期
+          # install.sh/install.ps1 URL 重写在本仓库不需要，staged 产物与 Git blob
+          # 保持一致，由 verify 阶段的 blob 校验兜底。
           PY
           (
             cd dist
@@ -965,16 +948,14 @@ jobs:
             }
           }
 
-          # fork 差异：prepare-release 阶段会把 install.ps1 的上游 release base 重写为
-          # 本仓库（与 install.sh 一致），因此这里不做 Git blob 一致性校验，改为断言
-          # staged install.ps1 已完成重写：不含上游 base、指向本仓库的 release。
-          $stagedInstallerText = Get-Content -LiteralPath $installer -Raw
-          if ($stagedInstallerText -match 'github\.com/uvwt/agentdock/releases') {
-            throw 'Staged install.ps1 still references the upstream release base.'
-          }
-          $stagedReleaseRepository = '${{ github.repository }}'.ToLowerInvariant()
-          if (-not $stagedInstallerText.Contains("github.com/$stagedReleaseRepository/releases")) {
-            throw "Staged install.ps1 does not reference $stagedReleaseRepository release base."
+          # fork 与上游的差异：scripts/install/install.{sh,ps1} 的默认 release base
+          # 直接指向本 fork（bluesky4485/agentdock），发布产物无需发布期重写，
+          # staged install.ps1 与 Git blob 的一致性校验按上游原样保留。
+          $sourceCommit = '${{ needs.source.outputs.commit }}'
+          $expectedInstallerBlob = (git rev-parse "${sourceCommit}:scripts/install/install.ps1").Trim()
+          $actualInstallerBlob = (git hash-object --no-filters -- $installer).Trim()
+          if ($actualInstallerBlob -ne $expectedInstallerBlob) {
+            throw "Staged install.ps1 does not match source blob $expectedInstallerBlob."
           }
 
           foreach ($asset in @('install.ps1', 'AgentDockSetup-amd64.exe', 'agentdock_windows_amd64.zip')) {
