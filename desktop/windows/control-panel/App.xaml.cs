@@ -409,6 +409,10 @@ public partial class App : System.Windows.Application
             snapshot is not null && !_updateInProgress));
         menu.Items.Add(new Forms.ToolStripSeparator());
 
+        if (snapshot?.CoreRunning == true)
+        {
+            menu.Items.Add(CreateMenuItem(UiText.Get("OpenRuntimeAnalytics"), (_, _) => Runtime.OpenRuntimeAnalytics(snapshot.LocalMcpUrl)));
+        }
         menu.Items.Add(CreateMenuItem(UiText.Get("OpenLogsFolder"), (_, _) => Runtime.OpenLogsDirectory()));
         menu.Items.Add(CreateMenuItem(UiText.Get("OpenConfigFolder"), (_, _) => Runtime.OpenConfigDirectory()));
         menu.Items.Add(CreateMenuItem(UiText.Get("OpenDocumentation"), (_, _) => OpenDocumentation()));

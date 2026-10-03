@@ -13,6 +13,8 @@ import (
 // HTTP、Nexus Bridge 等传输层都只依赖这份传输无关契约。
 type Runtime interface {
 	RuntimeStatus() app.Result
+	RuntimeAnalytics() app.Result
+	RuntimeOverview() (app.Result, error)
 	RuntimeSkills() (app.Result, error)
 	RuntimeSkill(skill string) (app.Result, error)
 	RuntimeSkillFiles(skill string) (app.Result, error)
@@ -31,6 +33,12 @@ type Runtime interface {
 
 // MCPOAuthRuntime 是可选能力：只有支持 Remote MCP OAuth 的 Runtime 才实现。
 // 保持它独立于 Runtime 主接口，避免 callback relay 把所有测试替身和只读调用方一起扩展。
+// DiagnosticsRuntime 是增量只读能力。保持它独立于 Runtime 主接口，
+// 让旧实现或测试替身能明确返回“不支持”，而不是被迫实现空方法。
+type DiagnosticsRuntime interface {
+	RuntimeDiagnostics() app.Result
+}
+
 type MCPOAuthRuntime interface {
 	RuntimeMCPOAuthCallback(context.Context, oauthclient.CallbackResult) error
 }

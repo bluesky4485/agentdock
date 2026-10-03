@@ -54,6 +54,19 @@ func Dispatch(ctx context.Context, runtime Runtime, request Request) (map[string
 	switch {
 	case path == "/internal/runtime/status":
 		return map[string]any(runtime.RuntimeStatus()), nil
+	case path == "/internal/runtime/analytics":
+		return map[string]any(runtime.RuntimeAnalytics()), nil
+	case path == "/internal/runtime/overview":
+		result, err := runtime.RuntimeOverview()
+		return map[string]any(result), err
+	case path == "/internal/runtime/diagnostics":
+		diagnostics, ok := runtime.(DiagnosticsRuntime)
+		if !ok {
+			return nil, &app.ToolError{
+				Code: "DIAGNOSTICS_UNSUPPORTED", Message: "runtime does not support diagnostics", Category: "not_found",
+			}
+		}
+		return map[string]any(diagnostics.RuntimeDiagnostics()), nil
 	case path == "/internal/runtime/capabilities":
 		refresh := strings.EqualFold(request.queryValue("refresh"), "true") || method == http.MethodPost
 		result, err := runtime.RuntimeCapabilities(ctx, refresh)

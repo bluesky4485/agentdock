@@ -264,6 +264,18 @@
   <data name="OpenConfigFolder" xml:space="preserve">
     <value>打开配置目录</value>
   </data>
+  <data name="RuntimeAnalytics" xml:space="preserve">
+    <value>运行分析</value>
+  </data>
+  <data name="RuntimeAnalyticsDescription" xml:space="preserve">
+    <value>在浏览器中查看工具调用耗时、错误统计与运行资源。</value>
+  </data>
+  <data name="OpenRuntimeAnalytics" xml:space="preserve">
+    <value>打开运行分析</value>
+  </data>
+  <data name="RuntimeAnalyticsLocalUrlUnavailable" xml:space="preserve">
+    <value>本机运行分析地址不可用。</value>
+  </data>
   <data name="Ready" xml:space="preserve">
     <value>准备就绪</value>
   </data>

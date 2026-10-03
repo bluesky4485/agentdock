@@ -198,6 +198,7 @@
 "Restart AgentDock" = "重启 AgentDock";
 "Start AgentDock" = "启用 AgentDock";
 "Check for updates…" = "检查更新…";
+"Open runtime analytics" = "打开运行分析";
 "Open logs folder" = "打开日志目录";
 "Open documentation" = "打开使用文档";
 "Exit menu bar app" = "退出菜单栏";

@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"time"
 
 	sdkjsonrpc "github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,6 +16,7 @@ import (
 	"github.com/uvwt/agentdock/internal/app"
 	"github.com/uvwt/agentdock/internal/buildinfo"
 	"github.com/uvwt/agentdock/internal/config"
+	"github.com/uvwt/agentdock/internal/observability"
 )
 
 type Server struct {
@@ -144,21 +144,16 @@ func (s *Server) registerTool(def ToolDefinition) {
 }
 
 func (s *Server) callTool(ctx context.Context, name string, request *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-	started := time.Now()
 	arguments := map[string]any{}
 	if request != nil && request.Params != nil && len(request.Params.Arguments) > 0 && string(request.Params.Arguments) != "null" {
 		if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
-			slog.Warn("tool params invalid", "tool", name, "duration_ms", time.Since(started).Milliseconds())
+			// 原始 JSON 尚未进入 Runtime，属于 MCP 协议层错误；不记录请求正文或解析错误内容。
+			slog.Warn("mcp tool params invalid", "tool", name)
 			return nil, &sdkjsonrpc.Error{Code: sdkjsonrpc.CodeInvalidParams, Message: "tool arguments must be a JSON object"}
 		}
 	}
-	slog.Info("tool started", "tool", name)
+	ctx = observability.WithSource(ctx, observability.SourceMCP)
 	result, err := s.runtime.Call(ctx, name, arguments)
-	finishedAttrs := []any{"tool", name, "duration_ms", time.Since(started).Milliseconds(), "ok", err == nil}
-	if err != nil {
-		finishedAttrs = append(finishedAttrs, "error", err)
-	}
-	slog.Info("tool finished", finishedAttrs...)
 
 	encoded, encodeErr := json.Marshal(toolEnvelope(name, result, err))
 	if encodeErr != nil {

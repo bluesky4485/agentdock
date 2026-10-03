@@ -94,13 +94,22 @@ func (s *Server) appResourceDefinitions() []appResourceDefinition {
 		)
 	}
 	if s.cfg.ACPEnabled {
-		definitions = append(definitions, appResourceDefinition{
-			URI:         protocol.ACPStatusUIResourceURI,
-			Name:        "agentdock-acp-status",
-			Title:       "AgentDock ACP status",
-			Description: "Read-only ACP session and runtime status view.",
-			HTML:        mcpapps.HTML("acp_status", "ACP status"),
-		})
+		definitions = append(definitions,
+			appResourceDefinition{
+				URI:         protocol.ACPStatusUIResourceURI,
+				Name:        "agentdock-acp-status",
+				Title:       "AgentDock ACP status",
+				Description: "Read-only ACP session and runtime status view.",
+				HTML:        mcpapps.HTML("acp_status", "ACP status"),
+			},
+			appResourceDefinition{
+				URI:         protocol.ACPPromptUIResourceURI,
+				Name:        "agentdock-acp-prompt",
+				Title:       "AgentDock ACP prompt",
+				Description: "ACP prompt send, event, and cancellation view.",
+				HTML:        mcpapps.HTML("acp_prompt", "ACP Prompt"),
+			},
+		)
 	}
 	return definitions
 }

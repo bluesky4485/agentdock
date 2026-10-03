@@ -582,6 +582,32 @@ public sealed class RuntimeService : IDisposable
     public void OpenLogsDirectory() => OpenDirectory(LogsDirectory);
     public void OpenConfigDirectory() => OpenDirectory(ConfigDirectory);
 
+    public void OpenRuntimeAnalytics(string localMcpUrl)
+    {
+        if (!Uri.TryCreate(localMcpUrl, UriKind.Absolute, out var localUri) ||
+            localUri.Scheme != Uri.UriSchemeHttp ||
+            !IsLoopbackHost(localUri.Host))
+        {
+            throw new InvalidOperationException(UiText.Get("RuntimeAnalyticsLocalUrlUnavailable"));
+        }
+
+        var analyticsUri = new UriBuilder(localUri)
+        {
+            Path = "/analytics",
+            Query = "",
+            Fragment = ""
+        }.Uri;
+        Process.Start(new ProcessStartInfo(analyticsUri.AbsoluteUri)
+        {
+            UseShellExecute = true
+        });
+    }
+
+    private static bool IsLoopbackHost(string host) =>
+        string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(host, "::1", StringComparison.OrdinalIgnoreCase);
+
     private async Task<RuntimeManifest?> ReadRuntimeManifestAsync(CancellationToken cancellationToken)
     {
         var manifest = await ReadJsonAsync<RuntimeManifest>(ManifestPath, cancellationToken);

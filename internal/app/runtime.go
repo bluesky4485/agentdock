@@ -14,6 +14,7 @@ import (
 	"github.com/uvwt/agentdock/internal/envstore"
 	"github.com/uvwt/agentdock/internal/evolution"
 	mcpclient "github.com/uvwt/agentdock/internal/mcp/client"
+	"github.com/uvwt/agentdock/internal/observability"
 	pluginruntime "github.com/uvwt/agentdock/internal/plugin"
 	"github.com/uvwt/agentdock/internal/taskstate"
 	toolacp "github.com/uvwt/agentdock/internal/tool/acp"
@@ -49,6 +50,8 @@ type Runtime struct {
 	evolution      *evolution.Service
 	taskTools      *tooltask.Service
 	acp            *toolacp.Service
+	observer       *observability.Recorder
+	tracing        *observability.Tracing
 	lifecycleMu    sync.RWMutex
 	commandCtx     context.Context
 	commandCancel  context.CancelFunc
@@ -91,6 +94,7 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 	runtime := &Runtime{
 		cfg: cfg, ws: ws, skills: skills,
 		toolNames: toolNames, toolValidators: toolValidators,
+		observer:   observability.NewRecorder(observability.DefaultRecentCapacity),
 		commandCtx: commandCtx, commandCancel: commandCancel,
 	}
 	runtime.command = toolcommand.New(func() config.Config { return runtime.cfg }, ws, envs, func(ctx context.Context, skillRef string) (toolcommand.SkillLease, error) {
@@ -151,6 +155,8 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 	runtime.recall = toolrecall.New(func() config.Config { return runtime.cfg })
 	runtime.evolution = evolution.New(func() config.Config { return runtime.cfg }, tasks)
 	runtime.taskTools = tooltask.New(func() config.Config { return runtime.cfg }, tasks, runtime.evolution)
+	runtime.tracing = observability.NewTracing(nil)
+
 	if cfg.ACPEnabled {
 		managers := make(map[string]*acpruntime.Manager)
 		for _, profile := range cfg.EffectiveACPProfiles() {
@@ -268,18 +274,32 @@ func (r *Runtime) ToolDefinition(name string) (ToolDefinition, bool) {
 	return toolDefinitionForConfig(name, r.cfg)
 }
 
-func (r *Runtime) Call(ctx context.Context, name string, args map[string]any) (Result, error) {
+func (r *Runtime) Call(ctx context.Context, name string, args map[string]any) (result Result, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	startedAt := time.Now()
+	r.observer.BeginTool()
+	source := observability.SourceFromContext(ctx)
+	parentCtx := ctx
+	ctx, span := r.tracing.StartTool(ctx, source)
+	defer span.End()
+	ctx = observability.WithExecution(ctx, startedAt)
+	defer r.observeToolCall(parentCtx, ctx, name, startedAt, &err)
+
 	if args == nil {
 		args = map[string]any{}
 	}
-	if err := r.validateToolArguments(name, args); err != nil {
+	if err = r.validateToolArguments(name, args); err != nil {
 		return nil, err
 	}
 	spec, ok := toolSpecByName(name)
 	if !ok || spec.Handler == nil {
-		return nil, toolErrorDetails("UNKNOWN_TOOL", "tool has no handler", "validation", map[string]any{"tool": name})
+		err = toolErrorDetails("UNKNOWN_TOOL", "tool has no handler", "validation", map[string]any{"tool": name})
+		return nil, err
 	}
-	return spec.Handler(ctx, r, args)
+	result, err = spec.Handler(ctx, r, args)
+	return result, err
 }
 
 func (r *Runtime) validateToolArguments(name string, args map[string]any) error {

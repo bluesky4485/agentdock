@@ -112,8 +112,8 @@ func TestUIResourcesMatchServedResourceRegistry(t *testing.T) {
 	server := &Server{cfg: config.Config{NexusEndpoint: "https://nexus.example.test", ACPEnabled: true, MCPAppsMode: config.MCPAppsModeFull}}
 	definitions := server.appResourceDefinitions()
 	resources := server.UIResources()
-	if len(definitions) != 10 || len(resources) != len(definitions) {
-		t.Fatalf("resource registry=%d bridge capabilities=%d, want 10", len(definitions), len(resources))
+	if len(definitions) != 11 || len(resources) != len(definitions) {
+		t.Fatalf("resource registry=%d bridge capabilities=%d, want 11", len(definitions), len(resources))
 	}
 	byURI := make(map[string]protocol.UIResourceCapability, len(resources))
 	for _, resource := range resources {
@@ -482,7 +482,7 @@ func TestMCPAppsBindResourcesDirectlyToBusinessTools(t *testing.T) {
 	if resources[protocol.RecallUIResourceURI] != nil || resources[protocol.WorkflowUIResourceURI] != nil {
 		t.Fatal("Nexus-only UI resources should not be listed when Nexus is disabled")
 	}
-	if resources[protocol.ACPStatusUIResourceURI] != nil {
+	if resources[protocol.ACPStatusUIResourceURI] != nil || resources[protocol.ACPPromptUIResourceURI] != nil {
 		t.Fatal("ACP UI resource should not be listed when ACP is disabled")
 	}
 
@@ -705,7 +705,7 @@ func TestReadAppResourceForNexusBridge(t *testing.T) {
 	}
 }
 
-func TestMCPAppsExposeACPViewOnlyWhenACPEnabled(t *testing.T) {
+func TestMCPAppsExposeACPViewsOnlyWhenACPEnabled(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -732,12 +732,11 @@ func TestMCPAppsExposeACPViewOnlyWhenACPEnabled(t *testing.T) {
 		t.Fatalf("tools/list count = %d, want runtime registry count %d", len(tools), want)
 	}
 	assertToolUIResource(t, tools["acp_session"], protocol.ACPStatusUIResourceURI)
-	for _, name := range []string{"acp_prompt", "acp_interaction"} {
-		if tool := tools[name]; tool == nil {
-			t.Fatalf("%s was not exposed", name)
-		} else if tool.Meta["ui"] != nil {
-			t.Fatalf("%s should not bind a static ACP widget: %#v", name, tool.Meta)
-		}
+	assertToolUIResource(t, tools["acp_prompt"], protocol.ACPPromptUIResourceURI)
+	if tool := tools["acp_interaction"]; tool == nil {
+		t.Fatal("acp_interaction was not exposed")
+	} else if tool.Meta["ui"] != nil {
+		t.Fatalf("acp_interaction should not bind a static ACP widget: %#v", tool.Meta)
 	}
 
 	read, err := harness.session.ReadResource(t.Context(), &mcpsdk.ReadResourceParams{URI: protocol.ACPStatusUIResourceURI})
@@ -747,13 +746,26 @@ func TestMCPAppsExposeACPViewOnlyWhenACPEnabled(t *testing.T) {
 	if len(read.Contents) != 1 || !strings.Contains(read.Contents[0].Text, "acp_status") {
 		t.Fatalf("ACP resource contents = %#v", read.Contents)
 	}
-	for _, marker := range []string{"message-role", `message.role!=="user"&&message.role!=="assistant"`, "No user or assistant messages in this AgentDock process.", `session.agent||(isObject(state.agent)`, `const latest=[...state.messages].reverse().find`, `compactRows.push(el("span","compact-summary",latest.content))`, `const sessionMeta=[session.status||state.status,session.agent||"",session.cwd||""]`, `compactShell({action:state.action||"status",title:identity}`} {
+	for _, marker := range []string{"message-role", `function renderACP(data)`, `appendACPChatMessages(fragment,transcript)`, `compactShell({action,title:identity}`} {
 		if !strings.Contains(read.Contents[0].Text, marker) {
 			t.Fatalf("ACP resource missing conversation marker %q", marker)
 		}
 	}
 	assertResourceUIMeta(t, read.Contents[0].Meta, "")
 
+	promptRead, err := harness.session.ReadResource(t.Context(), &mcpsdk.ReadResourceParams{URI: protocol.ACPPromptUIResourceURI})
+	if err != nil {
+		t.Fatalf("ReadResource(ACP prompt) error = %v", err)
+	}
+	if len(promptRead.Contents) != 1 || !strings.Contains(promptRead.Contents[0].Text, `expectedView="acp_prompt"`) {
+		t.Fatalf("ACP prompt resource contents = %#v", promptRead.Contents)
+	}
+	for _, marker := range []string{`function renderACPPrompt(data)`, `acpPromptText(lastToolInput.prompt)`, `action==="events"&&transcript.length`} {
+		if !strings.Contains(promptRead.Contents[0].Text, marker) {
+			t.Fatalf("ACP prompt resource missing marker %q", marker)
+		}
+	}
+	assertResourceUIMeta(t, promptRead.Contents[0].Meta, "")
 }
 
 func TestAppWidgetDomainRequiresHTTPSOrigin(t *testing.T) {

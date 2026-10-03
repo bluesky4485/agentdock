@@ -15,6 +15,7 @@ import (
 	"github.com/uvwt/agentdock/internal/config"
 	"github.com/uvwt/agentdock/internal/envstore"
 	"github.com/uvwt/agentdock/internal/mcp/oauthclient"
+	"github.com/uvwt/agentdock/internal/observability"
 )
 
 type Manager struct {
@@ -678,8 +679,11 @@ func (m *Manager) Call(ctx context.Context, qualifiedName string, arguments map[
 			recordStateError(state, err)
 			return nil, err
 		}
-		if _, err := m.refreshStateLocked(ctx, runtimeCfg, state); err != nil {
-			return nil, err
+		refreshStartedAt := time.Now()
+		_, refreshErr := m.refreshStateLocked(ctx, runtimeCfg, state)
+		observability.RecordStage(ctx, observability.StageMCPRefresh, refreshStartedAt, refreshErr == nil)
+		if refreshErr != nil {
+			return nil, refreshErr
 		}
 	}
 	tool, exists := state.tools[name]
@@ -689,7 +693,9 @@ func (m *Manager) Call(ctx context.Context, qualifiedName string, arguments map[
 	if err := validateToolArguments(tool, arguments); err != nil {
 		return nil, err
 	}
+	callStartedAt := time.Now()
 	result, err := state.client.callTool(ctx, name, arguments)
+	observability.RecordStage(ctx, observability.StageMCPRemoteCall, callStartedAt, err == nil)
 	if err != nil {
 		// 工具调用失败是请求级结果，不代表 MCP server 的连接或发现状态失效。
 		// server 的 lastError 只记录 refresh / initialize / tools/list 生命周期故障。

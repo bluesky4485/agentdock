@@ -457,6 +457,25 @@ final class ServiceController: @unchecked Sendable {
         NSWorkspace.shared.open(paths.appSupport)
     }
 
+    func openRuntimeAnalytics(configuration: ServiceConfiguration?) {
+        guard let localMCPURL = configuration?.localMCPURL,
+              var components = URLComponents(url: localMCPURL, resolvingAgainstBaseURL: false),
+              components.scheme == "http",
+              isLoopbackHost(components.host) else {
+            return
+        }
+        components.path = "/analytics"
+        components.query = nil
+        components.fragment = nil
+        guard let analyticsURL = components.url else { return }
+        NSWorkspace.shared.open(analyticsURL)
+    }
+
+    private func isLoopbackHost(_ host: String?) -> Bool {
+        guard let normalized = host?.lowercased() else { return false }
+        return normalized == "localhost" || normalized == "127.0.0.1" || normalized == "::1"
+    }
+
     private var coreService: SMAppService {
         SMAppService.agent(plistName: Self.corePlistName)
     }

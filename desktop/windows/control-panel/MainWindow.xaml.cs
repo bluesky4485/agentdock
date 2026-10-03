@@ -106,6 +106,7 @@ public partial class MainWindow : Window
             ServiceStatusText.Text = snapshot.CoreRunning ? UiText.Get("Running") : UiText.Get("Stopped");
             HealthStatusText.Text = snapshot.Healthy ? UiText.Get("Healthy") : UiText.Get("Unavailable");
             VersionText.Text = string.IsNullOrWhiteSpace(snapshot.Version) ? UiText.Get("Unknown") : snapshot.Version;
+            RuntimeAnalyticsButton.IsEnabled = snapshot.CoreRunning;
             LocalMcpTextBox.Text = snapshot.LocalMcpUrl;
             PublicMcpTextBox.Text = snapshot.PublicMcpUrl;
             UpdateCredentialText();
@@ -1043,6 +1044,22 @@ public partial class MainWindow : Window
 
     private string SelectedMcpAppsMode() =>
         (McpAppsModeComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "full";
+
+    private void RuntimeAnalyticsButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_snapshot is null)
+            {
+                return;
+            }
+            _runtime.OpenRuntimeAnalytics(_snapshot.LocalMcpUrl);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "AgentDock", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 
     private void OpenLogsButton_Click(object sender, RoutedEventArgs e)
     {

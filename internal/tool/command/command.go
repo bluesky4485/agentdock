@@ -12,6 +12,7 @@ import (
 
 	"github.com/uvwt/agentdock/internal/config"
 	"github.com/uvwt/agentdock/internal/envstore"
+	"github.com/uvwt/agentdock/internal/observability"
 	"github.com/uvwt/agentdock/internal/tool/command/session"
 )
 
@@ -86,6 +87,7 @@ func (svc *Service) Exec(ctx context.Context, request ExecRequest) (Result, erro
 	// 背景：exec_command 可能先返回 running，让模型后续通过 session_observe action=status 继续取结果；
 	// 如果子进程绑定到单次 MCP 请求 ctx，请求结束时 git push / npm install 等长任务会被杀掉。
 	// 因此长任务只受 timeout_ms 和 session_act action=kill/kill_all 控制。
+	startStartedAt := time.Now()
 	s, sandboxStatus, err := invocation.start(commandCtx, timeout, tty, func(command *exec.Cmd) (func(), session.PreparationStatus) {
 		// AgentDock 不额外过滤命令，实际权限边界由所选运行环境决定。
 		privilegeWarning := "exec_command runs with the AgentDock process OS user privileges"
@@ -97,6 +99,7 @@ func (svc *Service) Exec(ctx context.Context, request ExecRequest) (Result, erro
 	// 只有 invocation.start 完整返回后，runner、平台进程控制器以及 cmdCtx 取消监听才都已经建立。
 	// Runtime.Close 会等待这个启动窗口排空，再取消 commandCtx，避免在半启动状态抢占进程。
 	svc.sessions.FinishStart()
+	observability.RecordStage(ctx, observability.StageCommandStart, startStartedAt, err == nil)
 	if err != nil {
 		return nil, err
 	}
@@ -138,19 +141,26 @@ func (svc *Service) Exec(ctx context.Context, request ExecRequest) (Result, erro
 	case commandExecutionModeAsync:
 		return storeSession("explicit_async"), nil
 	case commandExecutionModeSync:
+		waitStartedAt := time.Now()
 		select {
 		case <-s.Done:
+			observability.RecordStage(ctx, observability.StageCommandForegroundWait, waitStartedAt, true)
 		case <-ctx.Done():
+			observability.RecordStage(ctx, observability.StageCommandForegroundWait, waitStartedAt, false)
 			return storeSession("request_cancelled"), nil
 		}
 	case commandExecutionModeAuto:
 		timer := time.NewTimer(yield)
 		defer timer.Stop()
+		waitStartedAt := time.Now()
 		select {
 		case <-s.Done:
+			observability.RecordStage(ctx, observability.StageCommandForegroundWait, waitStartedAt, true)
 		case <-timer.C:
+			observability.RecordStage(ctx, observability.StageCommandForegroundWait, waitStartedAt, true)
 			return storeSession("foreground_threshold_exceeded"), nil
 		case <-ctx.Done():
+			observability.RecordStage(ctx, observability.StageCommandForegroundWait, waitStartedAt, false)
 			return storeSession("request_cancelled"), nil
 		}
 	}

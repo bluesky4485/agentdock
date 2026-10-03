@@ -64,6 +64,21 @@
               </Grid>
             </GroupBox>
 
+            <GroupBox Header="{local:Loc RuntimeAnalytics}">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{local:Loc RuntimeAnalyticsDescription}" Foreground="#667085"
+                           VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,18,0" />
+                <Button x:Name="RuntimeAnalyticsButton" Grid.Column="1"
+                        Content="{local:Loc OpenRuntimeAnalytics}"
+                        Click="RuntimeAnalyticsButton_Click"
+                        IsEnabled="False" />
+              </Grid>
+            </GroupBox>
+
             <GroupBox Header="{local:Loc ConnectionAddresses}">
               <Grid>
                 <Grid.ColumnDefinitions>

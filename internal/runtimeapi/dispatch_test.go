@@ -20,7 +20,16 @@ type runtimeStub struct {
 	pluginName    string
 }
 
-func (r *runtimeStub) RuntimeStatus() app.Result          { return app.Result{"status": "ok"} }
+func (r *runtimeStub) RuntimeStatus() app.Result    { return app.Result{"status": "ok"} }
+func (r *runtimeStub) RuntimeAnalytics() app.Result { return app.Result{"total_calls": 7} }
+func (r *runtimeStub) RuntimeOverview() (app.Result, error) {
+	return app.Result{
+		"tasks":   map[string]int{"active": 1, "active_recent_24h": 1},
+		"skills":  map[string]any{"count": 2},
+		"plugins": map[string]any{"count": 3, "available": true},
+		"mcp":     map[string]any{"count": 4},
+	}, nil
+}
 func (r *runtimeStub) RuntimeSkills() (app.Result, error) { return app.Result{}, nil }
 func (r *runtimeStub) RuntimeSkill(skill string) (app.Result, error) {
 	r.skillTarget = skill
@@ -64,6 +73,12 @@ func (r *runtimeStub) RuntimeEvolve(context.Context, map[string]any) (app.Result
 	return app.Result{}, nil
 }
 
+type diagnosticsRuntimeStub struct{ runtimeStub }
+
+func (r *diagnosticsRuntimeStub) RuntimeDiagnostics() app.Result {
+	return app.Result{"recent_calls": []any{"call"}}
+}
+
 func TestMethodContract(t *testing.T) {
 	tests := []struct {
 		method string
@@ -72,6 +87,8 @@ func TestMethodContract(t *testing.T) {
 		ok     bool
 	}{
 		{"GET", "/internal/runtime/status", "GET", true},
+		{"GET", "/internal/runtime/analytics", "GET", true},
+		{"GET", "/internal/runtime/diagnostics", "GET", true},
 		{"POST", "/internal/runtime/capabilities", "GET, POST", true},
 		{"DELETE", "/internal/runtime/tasks/task-1", "GET, DELETE", true},
 		{"POST", "/internal/runtime/tasks/task-1", "GET, DELETE", false},
@@ -86,6 +103,62 @@ func TestMethodContract(t *testing.T) {
 				t.Fatalf("AllowHeader() = %q, want %q", got, test.allow)
 			}
 		})
+	}
+}
+
+func TestDispatchAnalytics(t *testing.T) {
+	result, err := Dispatch(context.Background(), &runtimeStub{}, Request{
+		Method: "GET",
+		Path:   "/internal/runtime/analytics",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["total_calls"] != 7 {
+		t.Fatalf("analytics result = %#v", result)
+	}
+}
+
+func TestDispatchOverviewUsesDedicatedProjection(t *testing.T) {
+	result, err := Dispatch(context.Background(), &runtimeStub{}, Request{
+		Method: "GET",
+		Path:   "/internal/runtime/overview",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, ok := result["tasks"].(map[string]int)
+	if !ok || tasks["active_recent_24h"] != 1 {
+		t.Fatalf("overview tasks = %#v", result["tasks"])
+	}
+	skills, ok := result["skills"].(map[string]any)
+	if !ok || skills["count"] != 2 {
+		t.Fatalf("overview skills = %#v", result["skills"])
+	}
+}
+
+func TestDispatchDiagnostics(t *testing.T) {
+	result, err := Dispatch(context.Background(), &diagnosticsRuntimeStub{}, Request{
+		Method: "GET",
+		Path:   "/internal/runtime/diagnostics",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, ok := result["recent_calls"].([]any)
+	if !ok || len(calls) != 1 || calls[0] != "call" {
+		t.Fatalf("diagnostics result = %#v", result)
+	}
+}
+
+func TestDispatchDiagnosticsRejectsUnsupportedRuntime(t *testing.T) {
+	_, err := Dispatch(context.Background(), &runtimeStub{}, Request{
+		Method: "GET",
+		Path:   "/internal/runtime/diagnostics",
+	})
+	var toolErr *app.ToolError
+	if !errors.As(err, &toolErr) || toolErr.Code != "DIAGNOSTICS_UNSUPPORTED" || toolErr.Category != "not_found" {
+		t.Fatalf("unsupported diagnostics error = %#v", err)
 	}
 }
 

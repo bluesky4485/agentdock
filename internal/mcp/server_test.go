@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/uvwt/agentdock/internal/app"
 	"github.com/uvwt/agentdock/internal/config"
+	"github.com/uvwt/agentdock/internal/observability"
 )
 
 func TestToolDescriptorsExposeSafetyAnnotations(t *testing.T) {
@@ -53,6 +55,24 @@ func assertToolAnnotation(t *testing.T, descriptor map[string]any, readOnly, des
 	assertBoolPointer("openWorldHint", openWorld)
 }
 
+func TestOpenAIReviewedToolDescriptorsMatchBehavior(t *testing.T) {
+	browser := toolDescriptorsForConfig(t, []string{"browser_snapshot"}, config.Config{BrowserEnabled: true})[0]
+	assertToolAnnotation(t, browser, false, false, true)
+
+	plugin := toolDescriptorsForConfig(t, []string{"plugin_manage"}, config.Config{})[0]
+	description, _ := plugin["description"].(string)
+	for _, forbidden := range []string{"Git", "catalog"} {
+		if strings.Contains(description, forbidden) {
+			t.Fatalf("plugin_manage description still claims unsupported %s behavior: %q", forbidden, description)
+		}
+	}
+	for _, required := range []string{"local Plugin directories", "ZIP archives", "Remote sources must be fetched locally"} {
+		if !strings.Contains(description, required) {
+			t.Fatalf("plugin_manage description missing %q: %q", required, description)
+		}
+	}
+}
+
 func TestFilePublishDescriptorExposesFileRewritePath(t *testing.T) {
 	descriptors := toolDescriptorsForConfig(t, []string{"file_publish"}, config.Config{})
 	byName := map[string]map[string]any{}
@@ -79,8 +99,21 @@ func TestOpenAIFileMetadataMatchesDeclaredSchemas(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s file input path %q missing from input schema", def.Name, path)
 			}
-			if property["type"] != "string" || property["format"] != "binary" {
-				t.Fatalf("%s file input %q must be string/binary: %#v", def.Name, path, property)
+			if property["type"] != "object" {
+				t.Fatalf("%s file input %q must be an object: %#v", def.Name, path, property)
+			}
+			properties, ok := property["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s file input %q properties = %#v", def.Name, path, property["properties"])
+			}
+			for _, key := range []string{"download_url", "file_id", "file_name", "mime_type"} {
+				if _, ok := properties[key]; !ok {
+					t.Fatalf("%s file input %q missing documented property %q", def.Name, path, key)
+				}
+			}
+			required, ok := property["required"].([]string)
+			if !ok || !slices.Contains(required, "download_url") || !slices.Contains(required, "file_id") {
+				t.Fatalf("%s file input %q required = %#v", def.Name, path, property["required"])
 			}
 		}
 		if len(def.FileArgRewritePaths) > 0 {
@@ -225,6 +258,15 @@ func TestOfficialSDKServerListsAndCallsAgentDockTools(t *testing.T) {
 	runtimeInfo, runtimeOK := structured["runtime"].(map[string]any)
 	if !ok || !runtimeOK || runtimeInfo["os"] == "" || runtimeInfo["path_model"] != config.PathModel || result.IsError {
 		t.Fatalf("CallTool() result = %#v", result)
+	}
+
+	analytics := runtime.RuntimeAnalytics()
+	recent, ok := analytics["recent_calls"].([]observability.ExecutionRecord)
+	if !ok || len(recent) == 0 {
+		t.Fatalf("runtime analytics recent_calls = %#v", analytics["recent_calls"])
+	}
+	if recent[0].Tool != "agentdock_context" || recent[0].Source != observability.SourceMCP || !recent[0].Success {
+		t.Fatalf("MCP tool analytics = %#v", recent[0])
 	}
 
 	if err := session.Close(); err != nil {

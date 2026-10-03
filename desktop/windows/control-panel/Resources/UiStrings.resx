@@ -264,6 +264,18 @@
   <data name="OpenConfigFolder" xml:space="preserve">
     <value>Open config folder</value>
   </data>
+  <data name="RuntimeAnalytics" xml:space="preserve">
+    <value>Runtime analytics</value>
+  </data>
+  <data name="RuntimeAnalyticsDescription" xml:space="preserve">
+    <value>View tool call latency, error statistics, and runtime resources in your browser.</value>
+  </data>
+  <data name="OpenRuntimeAnalytics" xml:space="preserve">
+    <value>Open runtime analytics</value>
+  </data>
+  <data name="RuntimeAnalyticsLocalUrlUnavailable" xml:space="preserve">
+    <value>The local runtime analytics address is unavailable.</value>
+  </data>
   <data name="Ready" xml:space="preserve">
     <value>Ready</value>
   </data>

@@ -6,6 +6,7 @@ import (
 
 	"github.com/uvwt/agentdock/internal/buildinfo"
 	"github.com/uvwt/agentdock/internal/config"
+	"github.com/uvwt/agentdock/internal/observability"
 	toolmcp "github.com/uvwt/agentdock/internal/tool/mcp"
 	toolplugin "github.com/uvwt/agentdock/internal/tool/plugin"
 )
@@ -29,6 +30,56 @@ func (r *Runtime) RuntimeStatus() Result {
 		"tool_count":            len(tools),
 		"tools":                 tools,
 	}
+}
+
+func (r *Runtime) RuntimeAnalytics() Result {
+	snapshot := r.observer.Snapshot()
+	return Result{
+		"ok":              true,
+		"source":          runtimeAPISource,
+		"started_at":      snapshot.StartedAt,
+		"recent_capacity": snapshot.RecentCapacity,
+		"window_calls":    snapshot.WindowCalls,
+		"total_calls":     snapshot.TotalCalls,
+		"total_errors":    snapshot.TotalErrors,
+		"active_calls":    snapshot.ActiveCalls,
+		"tool_stats":      snapshot.ToolStats,
+		"recent_calls":    snapshot.RecentCalls,
+		"process":         snapshot.Process,
+	}
+}
+
+// RuntimeDiagnostics 只暴露最近调用的零 Payload 投影，供 Nexus 按需远程排障。
+// 本地 analytics 的进程指标与聚合统计不进入跨节点契约。
+func (r *Runtime) RuntimeDiagnostics() Result {
+	return Result{
+		"ok":           true,
+		"source":       runtimeAPISource,
+		"recent_calls": observability.ProjectDiagnostics(r.observer.RecentCalls()),
+	}
+}
+
+// RuntimeOverview 是 Nexus/NexusDock Cloud 的轻量控制面投影。
+// 这里直接统计本地索引，不能调用 RuntimeSkills 等明细接口，否则一个概览请求
+// 会重新触发 Skill 包校验、digest 和文件遍历，远程链路仍会被本地扫描拖慢。
+func (r *Runtime) RuntimeOverview() (Result, error) {
+	tasks, err := r.taskTools.RuntimeOverview()
+	if err != nil {
+		return nil, err
+	}
+	skillCount, err := r.skills.RuntimeCount()
+	if err != nil {
+		return nil, err
+	}
+	pluginCount, pluginErr := r.plugins.RuntimeCount()
+	return Result{
+		"ok":      true,
+		"source":  runtimeAPISource,
+		"tasks":   tasks,
+		"skills":  map[string]any{"count": skillCount},
+		"plugins": map[string]any{"count": pluginCount, "available": pluginErr == nil},
+		"mcp":     map[string]any{"count": r.dynamicMCP.RuntimeCount()},
+	}, nil
 }
 
 func (r *Runtime) RuntimeSkills() (Result, error) {
