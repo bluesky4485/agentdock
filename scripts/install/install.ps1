@@ -1808,13 +1808,21 @@ exit `$LASTEXITCODE
     $rollbackError = $null
     $taskRecoveryPath = ''
     try {
+        if ($effectivePrivilegeMode -eq 'elevated') {
+            # Stop the long-lived task owner before touching either stable shims or generation files.
+            Stop-ScheduledTask -TaskName 'AgentDock' -TaskPath '\' -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+        }
         if ($generationLayoutDetected -or $enginePrepared) {
             # Target Core runs as agentdock-core.exe after both bootstrap and Update Engine.
-            # Stopping the CUI shim would miss the running generation and leave the new pointer live.
+            # Setup runtime hosts and elevated task hosts execute stable shims, so both layers
+            # must be quiesced before rollback restores the stable entry files.
             $rollbackGenerationTray = Join-Path $generationBootstrapDirectory 'agentdock-tray.exe'
             $rollbackGenerationCore = Join-Path $generationBootstrapDirectory 'agentdock-core.exe'
             [void] (Stop-AgentDockTrayForUpgrade -BinaryPath $rollbackGenerationTray)
             [void] (Stop-AgentDockForUpgrade -BinaryPath $rollbackGenerationCore)
+            [void] (Stop-AgentDockTrayForUpgrade -BinaryPath $destinationTrayBinary)
+            [void] (Stop-AgentDockForUpgrade -BinaryPath $destinationBinary)
         } else {
             if ($trayStopAttempted -or $stableFilesMayBeReplaced -or $trayStartupRegistrationChanged) {
                 [void] (Stop-AgentDockTrayForUpgrade -BinaryPath $destinationTrayBinary)
@@ -1822,10 +1830,6 @@ exit `$LASTEXITCODE
             if ($agentDockStopAttempted -or $stableFilesMayBeReplaced -or $startupRegistrationChanged) {
                 [void] (Stop-AgentDockForUpgrade -BinaryPath $destinationBinary)
             }
-        }
-        if ($effectivePrivilegeMode -eq 'elevated') {
-            Stop-ScheduledTask -TaskName 'AgentDock' -TaskPath '\' -ErrorAction SilentlyContinue
-            Start-Sleep -Milliseconds 500
         }
 
         if ($stableFilesMayBeReplaced) {

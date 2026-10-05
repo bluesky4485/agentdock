@@ -117,6 +117,48 @@ func (c *Controller) Terminate() error {
 	return c.terminateErr
 }
 
+// Detach removes kill-on-close ownership before closing the controller handle.
+// It is used when a supervised launcher completed successfully and intentionally
+// left long-lived descendants behind. If the owner process dies before Detach,
+// Windows still closes the Job handle with KILL_ON_JOB_CLOSE and terminates them.
+func (c *Controller) Detach() error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.job == 0 {
+		return nil
+	}
+
+	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	var returned uint32
+	if err := windows.QueryInformationJobObject(
+		c.job,
+		windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&limits)),
+		uint32(unsafe.Sizeof(limits)),
+		&returned,
+	); err != nil {
+		return fmt.Errorf("inspect Windows Job Object before detach: %w", err)
+	}
+	limits.BasicLimitInformation.LimitFlags &^= windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err := windows.SetInformationJobObject(
+		c.job,
+		windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&limits)),
+		uint32(unsafe.Sizeof(limits)),
+	); err != nil {
+		return fmt.Errorf("detach Windows Job Object: %w", err)
+	}
+	if err := windows.CloseHandle(c.job); err != nil {
+		c.job = 0
+		return fmt.Errorf("close detached Windows Job Object: %w", err)
+	}
+	c.job = 0
+	return nil
+}
+
 func (c *Controller) Close() error {
 	if c == nil {
 		return nil

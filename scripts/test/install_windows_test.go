@@ -1018,6 +1018,8 @@ func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 		"-LogonType Interactive",
 		"-RunLevel Limited",
 		"Register-ScheduledTask",
+		"$initialLastRunTime = (Get-ScheduledTaskInfo",
+		"$task.State -eq 'Running' -or $info.LastRunTime -ne $initialLastRunTime",
 		"& $AgentDockBinary service task-start",
 		"--task-name $taskName",
 		"--expected-user-sid $identity.User.Value",
@@ -1036,6 +1038,8 @@ func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 		"Task Scheduler result: $rawResult",
 		"Read-RuntimeDiagnosticTail",
 		"Remove-Item -LiteralPath $diagnosticRoot -Recurse -Force",
+		"Stop-ScheduledTask -TaskName $taskName",
+		"$launchSucceeded = $true",
 		"Unregister-ScheduledTask",
 		"AGENTDOCK_HOME",
 		"AGENTDOCK_DEFAULT_DIR",
@@ -1047,9 +1051,14 @@ func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 	if !strings.Contains(brokerScript, "finally {") || !strings.Contains(brokerScript, "Unregister-ScheduledTask") {
 		t.Fatal("runtime launch broker must remove its temporary task even when launch fails")
 	}
-	for _, forbidden := range []string{"-Execute $powerShellPath", "-EncodedCommand $encodedCommand"} {
+	for _, forbidden := range []string{
+		"-Execute $powerShellPath",
+		"-EncodedCommand $encodedCommand",
+		"$startedAt = Get-Date",
+		"Get-CimInstance Win32_Process",
+	} {
 		if strings.Contains(brokerScript, forbidden) {
-			t.Fatalf("runtime launch broker must not use a console-subsystem PowerShell task action: %q", forbidden)
+			t.Fatalf("runtime launch broker contains forbidden legacy launch behavior: %q", forbidden)
 		}
 	}
 

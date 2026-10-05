@@ -15,6 +15,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/sys/windows"
+
+	processctl "github.com/uvwt/agentdock/internal/process"
 )
 
 func runSetupRuntimeHost(args []string) (int, error) {
@@ -142,12 +144,30 @@ func launchSetupRuntimeProcess(filePath, arguments, agentDockHome, agentDockDefa
 		defer stderrFile.Close()
 		command.Stdout = stdoutFile
 		command.Stderr = stderrFile
-		if err := command.Run(); err != nil {
+		if err := command.Start(); err != nil {
+			return 1, fmt.Errorf("start setup runtime process: %w", err)
+		}
+		controller, err := processctl.Attach(command)
+		if err != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			return 1, fmt.Errorf("supervise setup runtime process: %w", err)
+		}
+		defer controller.Close()
+
+		if err := command.Wait(); err != nil {
 			var exitErr *exec.ExitError
 			if errors.As(err, &exitErr) {
 				return exitErr.ExitCode(), nil
 			}
-			return 1, fmt.Errorf("run setup runtime process: %w", err)
+			return 1, fmt.Errorf("wait for setup runtime process: %w", err)
+		}
+
+		// service start may intentionally leave the real Core alive after the short-lived
+		// command exits. Disarm kill-on-close only after a successful exit. If Task Scheduler
+		// cancels this host before then, the OS closes the Job handle and kills the whole tree.
+		if err := controller.Detach(); err != nil {
+			return 1, fmt.Errorf("detach successful setup runtime process: %w", err)
 		}
 		return 0, nil
 	}

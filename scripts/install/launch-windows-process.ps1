@@ -142,7 +142,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -DontStopIfGoingOnBatteries
 
 $registered = $false
-$startedAt = Get-Date
+$launchSucceeded = $false
 try {
     Register-ScheduledTask `
         -TaskName $taskName `
@@ -151,6 +151,9 @@ try {
         -Settings $settings `
         -Force | Out-Null
     $registered = $true
+    # Task Scheduler timestamps can lag the caller's wall clock. This task name is
+    # unique, so compare the task's own before/after state instead of two clocks.
+    $initialLastRunTime = (Get-ScheduledTaskInfo -TaskName $taskName -TaskPath '\' -ErrorAction Stop).LastRunTime
     & $AgentDockBinary service task-start `
         --task-name $taskName `
         --expected-user-sid $identity.User.Value | Out-Null
@@ -162,12 +165,13 @@ try {
     do {
         $task = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction Stop
         $info = Get-ScheduledTaskInfo -TaskName $taskName -TaskPath '\' -ErrorAction Stop
-        $hasRun = $info.LastRunTime -ge $startedAt.AddSeconds(-1)
+        $hasRun = $task.State -eq 'Running' -or $info.LastRunTime -ne $initialLastRunTime
         if ($hasRun) {
             if (-not $WaitForExit) {
                 if ($task.State -eq 'Ready' -and $info.LastTaskResult -ne 0) {
                     throw "Runtime process failed to launch, Task Scheduler result: $($info.LastTaskResult)."
                 }
+                $launchSucceeded = $true
                 return
             }
             if ($task.State -notin @('Running', 'Queued')) {
@@ -179,6 +183,7 @@ try {
                         -StdoutPath $stdoutPath `
                         -StderrPath $stderrPath)
                 }
+                $launchSucceeded = $true
                 return
             }
         }
@@ -191,9 +196,35 @@ try {
     throw "Runtime process did not start within $TimeoutSeconds seconds."
 } finally {
     if ($registered) {
+        if (-not $launchSucceeded) {
+            # A failed wait must stop the unique Task action before unregistering it.
+            # The Go setup runtime host owns waited descendants through a kill-on-close Job.
+            Stop-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
+            $stopDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            do {
+                $remainingTask = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
+                if ($null -eq $remainingTask -or $remainingTask.State -notin @('Running', 'Queued')) {
+                    break
+                }
+                Start-Sleep -Milliseconds 100
+            } while ([DateTime]::UtcNow -lt $stopDeadline)
+        }
         Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false -ErrorAction SilentlyContinue
     }
     if (-not [string]::IsNullOrWhiteSpace($diagnosticRoot)) {
-        Remove-Item -LiteralPath $diagnosticRoot -Recurse -Force -ErrorAction SilentlyContinue
+        # Task Scheduler can report Ready slightly before the terminated host releases
+        # inherited stdout/stderr handles. Keep cleanup bounded without rediscovering
+        # process trees in PowerShell.
+        $cleanupDeadline = [DateTime]::UtcNow.AddSeconds(5)
+        do {
+            Remove-Item -LiteralPath $diagnosticRoot -Recurse -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath $diagnosticRoot)) {
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $cleanupDeadline)
+        if (Test-Path -LiteralPath $diagnosticRoot) {
+            Write-Warning "Unable to remove Setup runtime diagnostics directory: $diagnosticRoot"
+        }
     }
 }
