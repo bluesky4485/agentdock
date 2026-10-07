@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/uvwt/agentdock/internal/component"
 	"github.com/uvwt/agentdock/internal/config"
 	"github.com/uvwt/agentdock/internal/desktopruntime"
 	"github.com/uvwt/agentdock/internal/fs/processlock"
@@ -211,6 +212,26 @@ func (engine Engine) install(ctx context.Context, store *Store, request Request)
 			request.Version = "unknown"
 		}
 	}
+	if (request.TunnelMode == "quick" || request.TunnelMode == "named") &&
+		strings.TrimSpace(request.CloudflaredPath) == "" {
+		componentStore, err := component.NewStore(request.RuntimeRoot)
+		if err != nil {
+			return Result{}, fmt.Errorf("prepare cloudflared component: %w", err)
+		}
+		componentVersion := request.Version
+		if componentVersion == "unknown" {
+			componentVersion = ""
+		}
+		status, err := componentStore.Install(ctx, component.InstallOptions{
+			RuntimeRoot:      request.RuntimeRoot,
+			AgentDockVersion: componentVersion,
+			LegacyPaths:      component.LegacyPaths(request.RuntimeRoot),
+		})
+		if err != nil {
+			return Result{}, fmt.Errorf("prepare cloudflared component: %w", err)
+		}
+		request.CloudflaredPath = status.Path
+	}
 
 	transaction, err := newTransaction(request, platform, sourceVersion)
 	if err != nil {
@@ -317,14 +338,7 @@ func (engine Engine) install(ctx context.Context, store *Store, request Request)
 			if runtimeGOOS() == "windows" {
 				healthTimeout = desktopruntime.WindowsCoreStartTimeout
 			}
-			var healthErr error
-			if runtimeGOOS() != "darwin" && request.Version != "unknown" {
-				healthErr = updateengine.WaitForVersion(ctx, []string{endpoint}, strings.TrimPrefix(request.Version, "v"), healthTimeout)
-			}
 			if waitErr := waitHealthyWithProbe(ctx, request, endpoint, healthTimeout); waitErr != nil {
-				if healthErr != nil {
-					waitErr = errors.Join(healthErr, waitErr)
-				}
 				return fail(PhaseHealth, waitErr, staged)
 			}
 			result.Healthy = true
@@ -816,9 +830,17 @@ func verifyRequest(request Request) error {
 }
 
 func existingVersion(request Request) string {
+	// Windows generation layout 建立后，committed active pointer 是当前 known-good
+	// 版本的唯一权威来源。install transaction/result 只是 Installer 自己的历史，
+	// 可能落后于后续 self-update；优先读它们会把旧 stable shim 的版本误当成
+	// 当前 generation，导致下一次 Setup 生成错误的 source_version/fallback。
+	if version := windowsCommittedGeneration(request); version != "" {
+		return version
+	}
+
 	store, err := NewStore(request.StateRoot())
 	if err != nil {
-		return windowsCommittedGeneration(request)
+		return ""
 	}
 	transaction, err := store.ReadTransaction()
 	if err == nil {
@@ -832,7 +854,7 @@ func existingVersion(request Request) string {
 			return version
 		}
 	}
-	return windowsCommittedGeneration(request)
+	return ""
 }
 
 func versionFromInstallTransaction(transaction Transaction) string {

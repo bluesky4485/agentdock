@@ -39,8 +39,15 @@ func TestUnifiedInstallerEntryOwnsUnixBootstrap(t *testing.T) {
 		t.Fatalf("read install.sh: %v", err)
 	}
 	entry := string(data)
+	menu := "NexusDock 远程连接：\n1) 官方服务（推荐）\n2) 自托管\n3) 暂不连接"
+	if !strings.Contains(entry, menu) {
+		t.Fatalf("install.sh missing exact NexusDock menu: %q", menu)
+	}
 	for _, want := range []string{
+		`max_attempts=60`,
+		`正在获取 Quick Tunnel 公网地址...`,
 		`agentdock_${PLATFORM}_${ARCH}.tar.gz`,
+		`CLOUDFLARED_PATH="${AGENTDOCK_CLOUDFLARED_BINARY:-}"`,
 		"install --engine-ready",
 		"AGENTDOCK_INSTALLER_BASE_URL",
 		"verify_checksum",
@@ -55,10 +62,93 @@ func TestUnifiedInstallerEntryOwnsUnixBootstrap(t *testing.T) {
 		"uninstall-linux.sh",
 		"uninstall-macos.sh",
 		"AGENTDOCK_USE_LOCAL_PLATFORM_INSTALLER",
+		"AGENTDOCK_CLOUDFLARED_RELEASE_BASE_URL",
+		"cloudflared/releases/latest",
+		"install_cloudflared",
 	} {
 		if strings.Contains(entry, forbidden) {
 			t.Fatalf("install.sh still depends on platform installer asset %q", forbidden)
 		}
+	}
+}
+
+// fork 差异：本 fork 的发布资产在 GitHub Releases（bluesky4485/agentdock），
+// 而不是上游的 nexusdock 分发站；安装脚本结构与上游统一安装器保持一致。
+func TestInstallerDefaultsUseNexusDockDistribution(t *testing.T) {
+	unixData, err := os.ReadFile("../install/install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+	for _, want := range []string{
+		`DEFAULT_BASE_URL="https://github.com/bluesky4485/agentdock/releases/latest/download"`,
+	} {
+		if !strings.Contains(string(unixData), want) {
+			t.Fatalf("install.sh missing canonical distribution URL %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"VERSIONED_RELEASE_BASE_URL",
+		"AGENTDOCK_RELEASE_VERSION",
+		"--version latest|vX.Y.Z",
+		"RELEASE_VERSION",
+	} {
+		if strings.Contains(string(unixData), forbidden) {
+			t.Fatalf("install.sh must only install the current stable release; found %q", forbidden)
+		}
+	}
+
+	windowsData, err := os.ReadFile("../install/install.ps1")
+	if err != nil {
+		t.Fatalf("read install.ps1: %v", err)
+	}
+	if want := "$defaultReleaseBaseUrl = 'https://github.com/bluesky4485/agentdock/releases/latest/download'"; !strings.Contains(string(windowsData), want) {
+		t.Fatalf("install.ps1 missing canonical distribution URL %q", want)
+	}
+	for _, forbidden := range []string{
+		"[string] $Version = 'latest'",
+		"$versionedReleaseBaseUrl",
+		"RequestedVersion",
+	} {
+		if strings.Contains(string(windowsData), forbidden) {
+			t.Fatalf("install.ps1 must only install the current stable release; found %q", forbidden)
+		}
+	}
+}
+
+func TestUnifiedInstallerFreshFlowOrdersCoreNexusThenCloudflare(t *testing.T) {
+	data, err := os.ReadFile("../install/install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+	entry := string(data)
+	for _, want := range []string{
+		`OFFICIAL_NEXUS_ENDPOINT="${AGENTDOCK_NEXUS_OFFICIAL_ENDPOINT:-https://mcp.nexusdock.co}"`,
+		`OFFICIAL_NEXUS_DEVICES_URL="${AGENTDOCK_NEXUS_OFFICIAL_DEVICES_URL:-https://mcp.nexusdock.co/workspace/devices}"`,
+		`prompt_value '配对码'`,
+		`\n打开 %s 获取 NexusDock 配对码\n`,
+		`run_install_engine install "$CORE_TUNNEL_MODE"`,
+		`configure_nexus`,
+		`choose_tunnel_mode`,
+		`install_linux_cli_link`,
+		`.installer-onboarding`,
+		`write_onboarding_stage nexus`,
+		`write_onboarding_stage tunnel`,
+		`clear_onboarding_stage`,
+	} {
+		if !strings.Contains(entry, want) {
+			t.Fatalf("install.sh missing fresh-flow contract %q", want)
+		}
+	}
+
+	core := strings.Index(entry, `run_install_engine install "$CORE_TUNNEL_MODE"`)
+	nexus := strings.Index(entry[core:], "\n  configure_nexus\n")
+	tunnel := strings.Index(entry[core:], "\n      choose_tunnel_mode\n")
+	tunnelRepair := strings.Index(entry[core:], `run_install_engine repair "$TUNNEL_MODE" "$CLOUDFLARED_PATH"`)
+	if core < 0 || nexus < 0 || tunnel < 0 || tunnelRepair < 0 {
+		t.Fatal("fresh installer flow markers are incomplete")
+	}
+	if !(nexus < tunnel && tunnel < tunnelRepair) {
+		t.Fatalf("fresh installer order must be Core -> Nexus -> Tunnel choice -> component-backed repair; offsets nexus=%d tunnel=%d repair=%d", nexus, tunnel, tunnelRepair)
 	}
 }
 

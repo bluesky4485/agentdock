@@ -8,8 +8,8 @@
 #define OutputDir "..\..\dist"
 #endif
 
-#ifndef OfflinePayloadDir
-#define OfflinePayloadDir "..\..\dist\windows-offline-payload"
+#ifndef PayloadDir
+#define PayloadDir "..\..\dist\windows-setup-payload"
 #endif
 
 #ifdef WindowsARM64
@@ -27,11 +27,12 @@ AppVersion={#AppVersion}
 AppPublisher=AgentDock
 AppPublisherURL=https://github.com/uvwt/agentdock
 AppSupportURL=https://github.com/uvwt/agentdock/issues
-AppUpdatesURL=https://github.com/uvwt/agentdock/releases
+AppUpdatesURL=https://www.nexusdock.co/download/
 DefaultDirName={localappdata}\AgentDock
 DefaultGroupName=AgentDock
 DisableProgramGroupPage=yes
 DisableDirPage=yes
+DisableReadyPage=yes
 PrivilegesRequired=lowest
 OutputDir={#OutputDir}
 OutputBaseFilename={#SetupBaseFilename}
@@ -67,14 +68,28 @@ Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl, languages\Chines
 
 [Files]
 Source: "..\..\scripts\install\install.ps1"; Flags: dontcopy
-Source: "..\..\scripts\install\probe-protected-text.ps1"; Flags: dontcopy
 Source: "..\..\scripts\install\launch-windows-process.ps1"; Flags: dontcopy
-Source: "{#OfflinePayloadDir}\agentdock_windows_{#PayloadArchitecture}.zip"; Flags: dontcopy
-Source: "{#OfflinePayloadDir}\agentdock_windows_{#PayloadArchitecture}.zip.sha256"; Flags: dontcopy
-Source: "{#OfflinePayloadDir}\cloudflared.exe"; Flags: dontcopy
-Source: "..\..\scripts\install\install.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "ensure-windows-runtimes.ps1"; Flags: dontcopy
+Source: "runtime-prerequisites.ps1"; Flags: dontcopy
+Source: "runtime-bootstrap-probe.ps1"; Flags: dontcopy
+Source: "runtime-dependencies.json"; Flags: dontcopy
+Source: "{#PayloadDir}\agentdock_windows_{#PayloadArchitecture}.zip"; Flags: dontcopy
+Source: "{#PayloadDir}\agentdock_windows_{#PayloadArchitecture}.zip.sha256"; Flags: dontcopy
 Source: "..\..\scripts\install\uninstall-windows.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "assets\agentdock.ico"; DestDir: "{app}\installer"; Flags: ignoreversion
+
+[InstallDelete]
+; Remove bootstrap-only files persisted by older Setup builds. Current Setup extracts these to TEMP only.
+Type: files; Name: "{app}\installer\install.ps1"
+Type: files; Name: "{app}\installer\ensure-windows-runtimes.ps1"
+Type: files; Name: "{app}\installer\runtime-dependencies.json"
+; Remove shortcuts created by older Setup builds so upgrades converge on the current product surface.
+Type: files; Name: "{userdesktop}\AgentDock Control Panel.lnk"
+Type: files; Name: "{userdesktop}\AgentDock 控制面板.lnk"
+Type: files; Name: "{group}\AgentDock documentation.lnk"
+Type: files; Name: "{group}\AgentDock 使用文档.lnk"
+Type: files; Name: "{group}\Uninstall AgentDock.lnk"
+Type: files; Name: "{group}\卸载 AgentDock.lnk"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\bin"
@@ -82,11 +97,18 @@ Type: filesandordirs; Name: "{app}\versions"
 Type: filesandordirs; Name: "{app}\update"
 Type: files; Name: "{app}\active-version.json"
 Type: files; Name: "{app}\desktop-version.txt"
+Type: files; Name: "{app}\installer\install.ps1"
+Type: files; Name: "{app}\installer\ensure-windows-runtimes.ps1"
+Type: files; Name: "{app}\installer\runtime-dependencies.json"
 Type: files; Name: "{userdesktop}\{code:GetLocalizedMessage|DesktopShortcutName}.lnk"
+Type: files; Name: "{userdesktop}\AgentDock Control Panel.lnk"
+Type: files; Name: "{userdesktop}\AgentDock 控制面板.lnk"
+Type: files; Name: "{group}\AgentDock documentation.lnk"
+Type: files; Name: "{group}\AgentDock 使用文档.lnk"
+Type: files; Name: "{group}\Uninstall AgentDock.lnk"
+Type: files; Name: "{group}\卸载 AgentDock.lnk"
 
 [Icons]
-Name: "{group}\AgentDock"; Filename: "{app}\bin\agentdock-tray.exe"; WorkingDir: "{app}"; IconFilename: "{app}\installer\agentdock.ico"; AppUserModelID: "com.uvwt.agentdock.controlpanel"
-Name: "{group}\{code:GetLocalizedMessage|DocsShortcut}"; Filename: "https://uvwt.github.io/agentdock-docs/"
-Name: "{group}\{code:GetLocalizedMessage|UninstallShortcut}"; Filename: "{uninstallexe}"
+Name: "{group}\AgentDock"; Filename: "{app}\bin\agentdock-tray.exe"; WorkingDir: "{app}"; IconFilename: "{app}\bin\agentdock-tray.exe"; AppUserModelID: "com.uvwt.agentdock.controlpanel"
 
 #include "includes\code.iss"

@@ -2,6 +2,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $Version,
 
+    [string] $ProductVersion = '',
+
     [Parameter(Mandatory = $true)]
     [string[]] $Path
 )
@@ -32,6 +34,10 @@ function Normalize-WindowsVersion {
 }
 
 $windowsVersion = Normalize-WindowsVersion -Value $Version
+$displayProductVersion = $ProductVersion.Trim()
+if ([string]::IsNullOrWhiteSpace($displayProductVersion)) {
+    $displayProductVersion = $windowsVersion
+}
 $goHostOS = (& go env GOHOSTOS).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($goHostOS)) {
     throw 'Failed to resolve Go host OS for go-winres.'
@@ -43,7 +49,7 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($goHostArch)) {
 
 $descriptions = @{
     'agentdock.exe' = 'AgentDock'
-    'agentdock-tray.exe' = 'AgentDock Control Panel'
+    'agentdock-tray.exe' = 'AgentDock'
     'agentdock-arbiter.exe' = 'AgentDock Arbiter'
     'agentdock-shim.exe' = 'AgentDock Shim'
     'agentdock-tray-shim.exe' = 'AgentDock Tray Shim'
@@ -79,7 +85,7 @@ try {
             LegalCopyright = $copyright
             OriginalFilename = $expectedOriginalFilename
             ProductName = 'AgentDock'
-            ProductVersion = $windowsVersion
+            ProductVersion = $displayProductVersion
         }
 
         $existingInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($resolved)
@@ -121,10 +127,21 @@ try {
                                 LegalCopyright = $copyright
                                 OriginalFilename = $expectedOriginalFilename
                                 ProductName = 'AgentDock'
-                                ProductVersion = $windowsVersion
+                                ProductVersion = $displayProductVersion
                             }
                         }
                     }
+                }
+            }
+        }
+
+        if ($fileName -eq 'agentdock-tray-shim.exe') {
+            $iconSource = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'assets\agentdock.ico')).Path
+            $iconResourceName = 'agentdock.ico'
+            Copy-Item -LiteralPath $iconSource -Destination (Join-Path $tempRoot $iconResourceName) -Force
+            $resource['RT_GROUP_ICON'] = [ordered]@{
+                '#1' = [ordered]@{
+                    '0000' = $iconResourceName
                 }
             }
         }
@@ -142,7 +159,6 @@ try {
             $env:GOARCH = $goHostArch
             & go run github.com/tc-hib/go-winres@v0.3.3 patch `
                 --in $jsonPath `
-                --product-version $windowsVersion `
                 --file-version $windowsVersion `
                 --no-backup `
                 $resolved
@@ -174,4 +190,4 @@ try {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host "Applied AgentDock Windows VersionInfo $windowsVersion to $($Path.Count) executable(s)."
+Write-Host "Applied AgentDock Windows FileVersion $windowsVersion / ProductVersion $displayProductVersion to $($Path.Count) executable(s)."
