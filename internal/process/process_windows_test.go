@@ -82,6 +82,38 @@ func TestWindowsJobObjectTerminatesAttachedProcess(t *testing.T) {
 	}
 }
 
+func TestWindowsJobObjectDetachKeepsAttachedProcessAlive(t *testing.T) {
+	cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	controller, err := Attach(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Detach(); err != nil {
+		t.Fatal(err)
+	}
+
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		t.Fatalf("open detached process: %v", err)
+	}
+	defer windows.CloseHandle(handle)
+	state, err := windows.WaitForSingleObject(handle, 100)
+	if err != nil {
+		t.Fatalf("inspect detached process: %v", err)
+	}
+	if state != uint32(windows.WAIT_TIMEOUT) {
+		t.Fatalf("detached process exited unexpectedly, wait state=%d", state)
+	}
+}
+
 func TestWindowsJobObjectCloseTerminatesAttachedProcess(t *testing.T) {
 	cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30")
 	if err := cmd.Start(); err != nil {

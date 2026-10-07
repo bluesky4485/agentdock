@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param(
     [string] $InstallerPath = '',
-    [string] $Version = 'latest',
     [string] $ReleaseBaseUrl = '',
     [int] $Port = 18765,
     [string] $CompletionFile = ''
@@ -188,7 +187,6 @@ if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administ
 
 try {
     & $resolvedInstaller `
-        -Version $Version `
         -InstallDir $installDir `
         -RegisterStartup `
         -TunnelMode none `
@@ -200,7 +198,6 @@ try {
 
     # 第二次执行必须覆盖正在运行的二进制，并保留已有 DPAPI Token。
     & $resolvedInstaller `
-        -Version $Version `
         -InstallDir $installDir `
         -RegisterStartup `
         -TunnelMode none `

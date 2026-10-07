@@ -16,6 +16,11 @@ trap cleanup EXIT
 
 python3 "$ROOT_DIR/scripts/test/check-macos-i18n.py"
 
+# Finder/Dock 会给透明 legacy App icon 自动补系统底板；macOS 专用图标必须保持不透明，避免回归成灰底。
+MACOS_ICON_SOURCE="$ROOT_DIR/packaging/macos/assets/agentdock.png"
+test -f "$MACOS_ICON_SOURCE"
+test "$(sips -g hasAlpha "$MACOS_ICON_SOURCE" | awk '/hasAlpha:/ { print $2 }')" = "no"
+
 APP_DELEGATE="$ROOT_DIR/desktop/macos/AgentDockApp/Sources/AppDelegate.swift"
 grep -Fq 'item.autosaveName = "AgentDockMenuBarItem"' "$APP_DELEGATE"
 grep -Fq 'item.isVisible = true' "$APP_DELEGATE"
@@ -40,6 +45,7 @@ swiftc \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/InstallerConfiguration.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/AppVersion.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/DesktopUpdateResult.swift" \
+  "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/DesktopUpdateTransactionRecovery.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/DesktopUpdateServiceState.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/DesktopUpdateHandoff.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/ManagedEnvironment.swift" \
@@ -65,7 +71,8 @@ swiftc \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/TunnelTokenStore.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/LegacyDesktopRuntimeMigration.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/UpdateProgressEvent.swift" \
-  "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/UpdateStatusItemVisibility.swift" \
+  "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/DesktopUpdateActivity.swift" \
+  "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/BackgroundServiceLifecycle.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/ServiceController.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/InstallerRunner.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Tests/ServiceControllerValidationTests.swift" \
@@ -113,28 +120,10 @@ tar -C "$payload_build" -czf "$payload_dir/$agentdock_archive" \
   shasum -a 256 "$agentdock_archive" > "$agentdock_archive.sha256"
 )
 
-cat > "$TMP_ROOT/cloudflared.go" <<'GO'
-package main
-
-import "fmt"
-
-func main() {
-	fmt.Println("cloudflared version test")
-}
-GO
-cloudflared_binary="cloudflared_darwin_${release_arch}"
-CGO_ENABLED=0 GOOS=darwin GOARCH="$release_arch" \
-  go build -trimpath -o "$payload_dir/$cloudflared_binary" "$TMP_ROOT/cloudflared.go"
-chmod 0755 "$payload_dir/$cloudflared_binary"
-(
-  cd "$payload_dir"
-  shasum -a 256 "$cloudflared_binary" > "$cloudflared_binary.sha256"
-)
-
 AGENTDOCK_MACOS_ARCHES="$(uname -m)" \
 AGENTDOCK_MACOS_APP_OUTPUT_DIR="$TMP_ROOT/output" \
 AGENTDOCK_MACOS_OFFLINE_PAYLOAD_DIR="$payload_dir" \
-  "$ROOT_DIR/packaging/macos/build-app.sh"
+  "$ROOT_DIR/packaging/macos/build-app.sh" 0.0.0-dev
 
 APP="$TMP_ROOT/output/AgentDock.app"
 DMG="$TMP_ROOT/output/AgentDock-macos-universal.dmg"
@@ -149,14 +138,13 @@ test ! -e "$APP/Contents/Resources/browser-runner"
 test ! -e "$APP/Contents/Resources/offline-payload"
 test -f "$APP/Contents/Resources/AgentDock.icns"
 CORE_HELPER="$APP/Contents/Helpers/agentdock"
-CLOUDFLARED_HELPER="$APP/Contents/Helpers/cloudflared"
 ARBITER_HELPER="$APP/Contents/Helpers/agentdock-arbiter"
 CORE_AGENT_PLIST="$APP/Contents/Library/LaunchAgents/com.uvwt.agentdock.core.plist"
 TUNNEL_AGENT_PLIST="$APP/Contents/Library/LaunchAgents/com.uvwt.agentdock.tunnel.plist"
 MENU_AGENT_PLIST="$APP/Contents/Library/LaunchAgents/com.uvwt.agentdock.menu-login.plist"
 test -x "$CORE_HELPER"
-test -x "$CLOUDFLARED_HELPER"
 test -x "$ARBITER_HELPER"
+test ! -e "$APP/Contents/Helpers/cloudflared"
 test -f "$APP/Contents/Resources/core-skills/manifest.json"
 test -f "$CORE_AGENT_PLIST"
 test -f "$TUNNEL_AGENT_PLIST"
@@ -184,19 +172,14 @@ test "$(plutil -extract LimitLoadToSessionType raw -o - "$MENU_AGENT_PLIST")" = 
 # pipefail 下不要用 grep -q 提前关闭命令输出，避免上游偶发 SIGPIPE(141)。
 core_helper_version="$("$CORE_HELPER" --version)"
 [[ "$core_helper_version" == "AgentDock v"* ]]
-cloudflared_helper_version="$("$CLOUDFLARED_HELPER" --version)"
-[[ "$cloudflared_helper_version" == "cloudflared version test"* ]]
 codesign --verify --strict --verbose=2 "$MENU_LOGIN_HELPER"
 codesign --verify --strict --verbose=2 "$CORE_HELPER"
-codesign --verify --strict --verbose=2 "$CLOUDFLARED_HELPER"
 codesign --verify --strict --verbose=2 "$ARBITER_HELPER"
 menu_helper_signature="$(codesign -dv --verbose=4 "$MENU_LOGIN_HELPER" 2>&1)"
 core_signature="$(codesign -dv --verbose=4 "$CORE_HELPER" 2>&1)"
-cloudflared_signature="$(codesign -dv --verbose=4 "$CLOUDFLARED_HELPER" 2>&1)"
 arbiter_signature="$(codesign -dv --verbose=4 "$ARBITER_HELPER" 2>&1)"
 grep -q '^Identifier=com.uvwt.agentdock.login-helper$' <<< "$menu_helper_signature"
 grep -q '^Identifier=com.uvwt.agentdock.core$' <<< "$core_signature"
-grep -q '^Identifier=com.uvwt.agentdock.cloudflared$' <<< "$cloudflared_signature"
 grep -q '^Identifier=com.uvwt.agentdock.arbiter$' <<< "$arbiter_signature"
 test -f "$DMG"
 test -f "$DMG.sha256"
@@ -232,7 +215,6 @@ cmp "$APP/Contents/MacOS/AgentDock" "$zip_extract/AgentDock.app/Contents/MacOS/A
 cmp "$MENU_LOGIN_HELPER" "$zip_extract/AgentDock.app/Contents/Helpers/AgentDockLoginHelper"
 cmp "$MENU_AGENT_PLIST" "$zip_extract/AgentDock.app/Contents/Library/LaunchAgents/com.uvwt.agentdock.menu-login.plist"
 cmp "$CORE_HELPER" "$zip_extract/AgentDock.app/Contents/Helpers/agentdock"
-cmp "$CLOUDFLARED_HELPER" "$zip_extract/AgentDock.app/Contents/Helpers/cloudflared"
 cmp "$ARBITER_HELPER" "$zip_extract/AgentDock.app/Contents/Helpers/agentdock-arbiter"
 
 mkdir -p "$MOUNT_POINT"
@@ -248,7 +230,6 @@ cmp "$APP/Contents/MacOS/AgentDock" "$MOUNT_POINT/AgentDock.app/Contents/MacOS/A
 cmp "$MENU_LOGIN_HELPER" "$MOUNT_POINT/AgentDock.app/Contents/Helpers/AgentDockLoginHelper"
 cmp "$MENU_AGENT_PLIST" "$MOUNT_POINT/AgentDock.app/Contents/Library/LaunchAgents/com.uvwt.agentdock.menu-login.plist"
 cmp "$CORE_HELPER" "$MOUNT_POINT/AgentDock.app/Contents/Helpers/agentdock"
-cmp "$CLOUDFLARED_HELPER" "$MOUNT_POINT/AgentDock.app/Contents/Helpers/cloudflared"
 cmp "$ARBITER_HELPER" "$MOUNT_POINT/AgentDock.app/Contents/Helpers/agentdock-arbiter"
 cmp \
   "$APP/Contents/Resources/core-skills/manifest.json" \

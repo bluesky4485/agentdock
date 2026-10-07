@@ -4,25 +4,29 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
 	"golang.org/x/sys/windows"
 
+	"github.com/uvwt/agentdock/internal/authenticode"
 	"github.com/uvwt/agentdock/internal/fs/processlock"
 	processctl "github.com/uvwt/agentdock/internal/process"
 	"github.com/uvwt/agentdock/internal/updateengine"
 )
 
 const (
-	setupRuntimeHostFlag = "--setup-runtime-host"
-	taskCoreHostFlag     = "--task-core-host"
+	setupRuntimeHostFlag       = "--setup-runtime-host"
+	taskCoreHostFlag           = "--task-core-host"
+	windowsAppRuntimeProbeFlag = "--windows-app-runtime-probe"
 )
 
 var (
@@ -31,6 +35,13 @@ var (
 )
 
 func main() {
+	if len(os.Args) > 1 && strings.EqualFold(strings.TrimSpace(os.Args[1]), windowsAppRuntimeProbeFlag) {
+		exitCode, err := runWindowsAppRuntimeProbe(os.Args[2:])
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+		}
+		os.Exit(exitCode)
+	}
 	if len(os.Args) > 1 && strings.EqualFold(strings.TrimSpace(os.Args[1]), taskCoreHostFlag) {
 		exitCode, err := runTaskCoreHost(os.Args[2:])
 		if err != nil {
@@ -49,6 +60,74 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func runWindowsAppRuntimeProbe(args []string) (int, error) {
+	if len(args) != 2 {
+		return 2, fmt.Errorf("%s requires <bootstrap-dll> <minimum-version>", windowsAppRuntimeProbeFlag)
+	}
+	bootstrapDLL := strings.TrimSpace(args[0])
+	if bootstrapDLL == "" {
+		return 2, errors.New("Windows App Runtime bootstrap DLL path is empty")
+	}
+	majorMinor, packageVersion, err := parseWindowsPackageVersion(args[1])
+	if err != nil {
+		return 2, err
+	}
+	// The shim is a signed production binary. Never let this probe turn it into a generic
+	// DLL loader: validate Microsoft's publisher identity before LoadLibrary can run DllMain.
+	if err := authenticode.VerifyMicrosoftFile(context.Background(), bootstrapDLL); err != nil {
+		return 2, fmt.Errorf("verify Windows App Runtime bootstrap DLL publisher: %w", err)
+	}
+	dll, err := windows.LoadDLL(bootstrapDLL)
+	if err != nil {
+		return 2, fmt.Errorf("load Windows App Runtime bootstrap DLL: %w", err)
+	}
+	defer dll.Release()
+
+	initialize, err := dll.FindProc("MddBootstrapInitialize2")
+	if err != nil {
+		return 2, fmt.Errorf("resolve MddBootstrapInitialize2: %w", err)
+	}
+	shutdown, err := dll.FindProc("MddBootstrapShutdown")
+	if err != nil {
+		return 2, fmt.Errorf("resolve MddBootstrapShutdown: %w", err)
+	}
+
+	r1, _, _ := initialize.Call(
+		uintptr(majorMinor),
+		0, // versionTag
+		uintptr(packageVersion),
+		0, // MddBootstrapInitializeOptions_None
+	)
+	hresult := int32(uint32(r1))
+	_, _ = fmt.Fprintln(os.Stdout, hresult)
+	if hresult < 0 {
+		return 3, nil
+	}
+	shutdown.Call()
+	return 0, nil
+}
+
+func parseWindowsPackageVersion(raw string) (uint32, uint64, error) {
+	parts := strings.Split(strings.TrimSpace(raw), ".")
+	if len(parts) != 4 {
+		return 0, 0, fmt.Errorf("Windows App Runtime minimum version must have four numeric components: %q", raw)
+	}
+	var values [4]uint64
+	for i, part := range parts {
+		value, err := strconv.ParseUint(part, 10, 16)
+		if err != nil {
+			return 0, 0, fmt.Errorf("parse Windows App Runtime minimum version %q: %w", raw, err)
+		}
+		values[i] = value
+	}
+	if values[0] == 0 {
+		return 0, 0, fmt.Errorf("Windows App Runtime minimum version has invalid major version: %q", raw)
+	}
+	majorMinor := uint32(values[0]<<16 | values[1])
+	packageVersion := values[0]<<48 | values[1]<<32 | values[2]<<16 | values[3]
+	return majorMinor, packageVersion, nil
 }
 
 func run() error {
@@ -210,18 +289,24 @@ func resolveActiveWithRecovery(root string, store *updateengine.Store, layout up
 		return updateengine.ActiveVersion{}, fmt.Errorf("read AgentDock active version: %w", err)
 	}
 
+	if active.State == updateengine.StateTrial {
+		// Installer trial 的当前所有权由匹配的 install transaction 与活跃独占锁共同证明。
+		// 已提交的 self-update journal 只是历史记录，不能覆盖一个仍由 Installer 持有的
+		// 合法 trial；否则上一次正常提交留下的 journal 会永久阻断后续完整安装包升级。
+		owned, err := installerOwnsActiveTrial(root, active)
+		if err != nil {
+			return updateengine.ActiveVersion{}, err
+		}
+		if owned {
+			return active, nil
+		}
+	}
+
 	transaction, transactionErr := store.ReadTransaction()
 	if transactionErr != nil {
 		if active.State == updateengine.StateTrial {
 			if !os.IsNotExist(transactionErr) {
 				return updateengine.ActiveVersion{}, fmt.Errorf("read pending update transaction: %w", transactionErr)
-			}
-			owned, err := installerOwnsActiveTrial(root, active)
-			if err != nil {
-				return updateengine.ActiveVersion{}, err
-			}
-			if owned {
-				return active, nil
 			}
 			return updateengine.ActiveVersion{}, errors.New("active generation is still a trial without a live update or installer transaction")
 		}

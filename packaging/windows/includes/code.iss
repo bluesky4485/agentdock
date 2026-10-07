@@ -1,38 +1,20 @@
 [Code]
 var
-  UpgradeModePage: TInputOptionWizardPage;
-  StartupPage: TInputOptionWizardPage;
-  ConnectionPage: TInputOptionWizardPage;
-  FixedTunnelPage: TInputQueryWizardPage;
   DesktopShortcutCheckBox: TNewCheckBox;
   PurgeState: Boolean;
   UninstallCleanupExecuted: Boolean;
   ResultFilePath: String;
-  TemporaryTokenFilePath: String;
   ExistingInstallDetected: Boolean;
-  ExistingInstallVersion: String;
-  ExistingInstallSource: String;
-  ExistingTunnelTokenUsable: Boolean;
   ResolvedInstallRoot: String;
   InstallProgressPage: TOutputProgressWizardPage;
   InstallWarningCode: String;
   InstallWarningMessage: String;
+  SetupStartupMode: String;
+  ElevatedCoreEnabled: Boolean;
 
 function GetLocalizedMessage(Key: String): String;
 begin
   Result := CustomMessage(Key);
-end;
-
-function ReadTrimmedTextFile(Path: String): String;
-var
-  Content: AnsiString;
-begin
-  Result := '';
-  if FileExists(Path) then
-  begin
-    if LoadStringFromFile(Path, Content) then
-      Result := Trim(String(Content));
-  end;
 end;
 
 function ResolveInstallRoot(): String;
@@ -64,33 +46,22 @@ function DetectExistingInstallation(): Boolean;
 var
   UninstallKey: String;
   BinaryPath: String;
-  VersionValue: String;
 begin
-  ExistingInstallVersion := '';
-  ExistingInstallSource := '';
   UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppIdValue}_is1';
-
-  if RegQueryStringValue(HKCU, UninstallKey, 'DisplayVersion', VersionValue) then
+  if RegValueExists(HKCU, UninstallKey, 'DisplayVersion') then
   begin
-    ExistingInstallVersion := Trim(VersionValue);
-    ExistingInstallSource := 'setup';
+    Log('AgentDock existing installation detected: source=setup, root=' + ExistingInstallRoot());
     Result := True;
     Exit;
   end;
 
   BinaryPath := AddBackslash(ExistingInstallRoot()) + 'bin\agentdock.exe';
-  if FileExists(BinaryPath) or
+  Result :=
+    FileExists(BinaryPath) or
     FileExists(AddBackslash(ExistingInstallRoot()) + 'runtime.json') or
-    FileExists(AddBackslash(ExistingInstallRoot()) + 'start-agentdock.ps1') then
-  begin
-    if GetVersionNumbersString(BinaryPath, VersionValue) then
-      ExistingInstallVersion := Trim(VersionValue);
-    ExistingInstallSource := 'powershell';
-    Result := True;
-    Exit;
-  end;
-
-  Result := False;
+    FileExists(AddBackslash(ExistingInstallRoot()) + 'start-agentdock.ps1');
+  if Result then
+    Log('AgentDock existing installation detected: source=powershell, root=' + ExistingInstallRoot());
 end;
 
 function LegacyAgentDockScheduledTaskExists(): Boolean;
@@ -138,93 +109,19 @@ begin
   Result := Pos('"privilege_mode":"elevated"', Normalized) > 0;
 end;
 
-function ProtectedTextCanBeRead(Path: String; Entropy: String): Boolean;
-var
-  ExitCode: Integer;
-  Parameters: String;
-  ScriptPath: String;
-begin
-  Result := False;
-  if not FileExists(Path) then
-    Exit;
-
-  ExtractTemporaryFile('probe-protected-text.ps1');
-  ScriptPath := ExpandConstant('{tmp}\probe-protected-text.ps1');
-  Parameters :=
-    '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ScriptPath + '"' +
-    ' -Path "' + Path + '"' +
-    ' -Entropy "' + Entropy + '"';
-  if not Exec(
-    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    Parameters,
-    '',
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ExitCode) then
-  begin
-    Log('AgentDock could not start the DPAPI credential probe.');
-    Exit;
-  end;
-
-  Result := ExitCode = 0;
-  if not Result then
-    Log('AgentDock saved Cloudflare Tunnel Token is missing or unreadable for the current user.');
-end;
-
 procedure LoadExistingSettings();
 var
-  Mode: String;
-  URL: String;
-  RunKey: String;
-begin
-  ExistingTunnelTokenUsable := False;
-  if not ExistingInstallDetected then
-    Exit;
-
-  RunKey := 'Software\Microsoft\Windows\CurrentVersion\Run';
-  StartupPage.Values[0] :=
-    RegValueExists(HKCU, RunKey, 'AgentDock') or
-    RegValueExists(HKCU, RunKey, 'AgentDockTray') or
-    LegacyAgentDockScheduledTaskExists();
-  StartupPage.Values[1] := RuntimeUsesElevatedCore() or LegacyAgentDockScheduledTaskExists();
-
-  Mode := Lowercase(ReadTrimmedTextFile(AddBackslash(ExistingInstallRoot()) + 'cloudflared-mode.txt'));
-  if Mode = 'quick' then
-    ConnectionPage.SelectedValueIndex := 1
-  else if Mode = 'named' then
-  begin
-    ConnectionPage.SelectedValueIndex := 2;
-    ExistingTunnelTokenUsable := ProtectedTextCanBeRead(
-      AddBackslash(ExistingInstallRoot()) + 'cloudflared-token.dpapi',
-      'agentdock.cloudflare.tunnel.v1');
-  end
-  else
-    ConnectionPage.SelectedValueIndex := 0;
-
-  URL := ReadTrimmedTextFile(AddBackslash(ExistingInstallRoot()) + 'server-url.txt');
-  if URL <> '' then
-    FixedTunnelPage.Values[0] := URL;
-end;
-
-procedure ApplyExistingInstallPresentation();
-var
-  Details: String;
+  LegacyTaskDetected: Boolean;
 begin
   if not ExistingInstallDetected then
     Exit;
 
-  WizardForm.WelcomeLabel1.Caption := GetLocalizedMessage('UpgradeWelcome');
-  Details := '';
-  if ExistingInstallVersion <> '' then
-    Details := GetLocalizedMessage('UpgradeExistingVersion') + ' ' + ExistingInstallVersion + #13#10;
-  Details := Details + GetLocalizedMessage('UpgradeTargetVersion') + ' {#AppVersion}' + #13#10#13#10;
-  if ExistingInstallSource = 'setup' then
-    Details := Details + GetLocalizedMessage('UpgradeSetupManaged')
-  else
-    Details := Details + GetLocalizedMessage('UpgradeLegacyManaged');
-  WizardForm.WelcomeLabel2.Caption := Details;
-  Log('AgentDock existing installation detected: source=' + ExistingInstallSource +
-    ', version=' + ExistingInstallVersion + ', root=' + ExistingInstallRoot());
+  { 升级/修复不再让安装器重复编辑启动设置。PowerShell 安装层会分别保留
+    Core 与 Tray 的当前开机启动状态；权限模式仍从现有运行清单迁移。
+    旧固定计划任务必须始终检测，不能被已有 elevated 状态短路。 }
+  SetupStartupMode := 'preserve';
+  LegacyTaskDetected := LegacyAgentDockScheduledTaskExists();
+  ElevatedCoreEnabled := RuntimeUsesElevatedCore() or LegacyTaskDetected;
 end;
 
 function QuoteArgument(const Value: String): String;
@@ -260,98 +157,33 @@ begin
   end;
 end;
 
-function SelectedTunnelMode(): String;
-begin
-  case ConnectionPage.SelectedValueIndex of
-    1: Result := 'quick';
-    2: Result := 'named';
-  else
-    Result := 'none';
-  end;
-end;
-
 procedure InitializeWizard();
 var
-  ModeParam: String;
   AutoStartParam: String;
+  AdminModeParam: String;
 begin
   Log('AgentDock active language: ' + ActiveLanguage());
   ResolvedInstallRoot := ResolveInstallRoot();
   ExistingInstallDetected := DetectExistingInstallation();
 
-  UpgradeModePage := CreateInputOptionPage(
-    wpWelcome,
-    GetLocalizedMessage('UpgradeModeCaption'),
-    GetLocalizedMessage('UpgradeModeDescription'),
-    GetLocalizedMessage('UpgradeModeSubCaption'),
-    True,
-    False
-  );
-  UpgradeModePage.Add(GetLocalizedMessage('UpgradeKeepSettings'));
-  UpgradeModePage.Add(GetLocalizedMessage('UpgradeChangeSettings'));
-  UpgradeModePage.SelectedValueIndex := 0;
-
-  StartupPage := CreateInputOptionPage(
-    UpgradeModePage.ID,
-    GetLocalizedMessage('StartupPageCaption'),
-    GetLocalizedMessage('StartupPageDescription'),
-    GetLocalizedMessage('StartupPageSubCaption'),
-    False,
-    False
-  );
-  StartupPage.Add(GetLocalizedMessage('StartupOption'));
-  StartupPage.Add(GetLocalizedMessage('ElevatedCoreOption'));
-  StartupPage.Values[0] := True;
-  StartupPage.Values[1] := False;
-
-  ConnectionPage := CreateInputOptionPage(
-    StartupPage.ID,
-    GetLocalizedMessage('ConnectionPageCaption'),
-    GetLocalizedMessage('ConnectionPageDescription'),
-    GetLocalizedMessage('ConnectionPageSubCaption'),
-    True,
-    False
-  );
-  ConnectionPage.Add(GetLocalizedMessage('LocalMode'));
-  ConnectionPage.Add(GetLocalizedMessage('QuickMode'));
-  ConnectionPage.Add(GetLocalizedMessage('NamedMode'));
-  ConnectionPage.SelectedValueIndex := 0;
-
-  FixedTunnelPage := CreateInputQueryPage(
-    ConnectionPage.ID,
-    GetLocalizedMessage('FixedPageCaption'),
-    GetLocalizedMessage('FixedPageDescription'),
-    GetLocalizedMessage('FixedPageSubCaption')
-  );
-  FixedTunnelPage.Add(GetLocalizedMessage('ServerURLLabel'), False);
-  FixedTunnelPage.Add(GetLocalizedMessage('TunnelTokenLabel'), True);
-
+  { 首次安装采用产品默认：Core 与 Tray 均开机启动，Core 使用普通用户权限。
+    升级时 LoadExistingSettings 改为 preserve，避免 Setup 覆盖控制面板中的选择。 }
+  SetupStartupMode := 'enabled';
+  ElevatedCoreEnabled := False;
   LoadExistingSettings();
 
-  ModeParam := Lowercase(ExpandConstant('{param:MODE|}'));
-  if ModeParam = 'quick' then
-    ConnectionPage.SelectedValueIndex := 1
-  else if ModeParam = 'named' then
-    ConnectionPage.SelectedValueIndex := 2
-  else if ModeParam = 'local' then
-    ConnectionPage.SelectedValueIndex := 0;
-
+  { 静默安装参数保留给自动化/企业部署；交互式安装不再展示对应配置页。 }
   AutoStartParam := Lowercase(ExpandConstant('{param:AUTOSTART|}'));
   if (AutoStartParam = '0') or (AutoStartParam = 'false') then
-    StartupPage.Values[0] := False
+    SetupStartupMode := 'disabled'
   else if (AutoStartParam = '1') or (AutoStartParam = 'true') then
-    StartupPage.Values[0] := True;
+    SetupStartupMode := 'enabled';
 
-  AutoStartParam := Lowercase(ExpandConstant('{param:ADMINMODE|}'));
-  if (AutoStartParam = '0') or (AutoStartParam = 'false') or (AutoStartParam = 'standard') then
-    StartupPage.Values[1] := False
-  else if (AutoStartParam = '1') or (AutoStartParam = 'true') or (AutoStartParam = 'elevated') then
-    StartupPage.Values[1] := True;
-
-  if ExpandConstant('{param:SERVERURL|}') <> '' then
-    FixedTunnelPage.Values[0] := ExpandConstant('{param:SERVERURL|}');
-
-  ApplyExistingInstallPresentation();
+  AdminModeParam := Lowercase(ExpandConstant('{param:ADMINMODE|}'));
+  if (AdminModeParam = '0') or (AdminModeParam = 'false') or (AdminModeParam = 'standard') then
+    ElevatedCoreEnabled := False
+  else if (AdminModeParam = '1') or (AdminModeParam = 'true') or (AdminModeParam = 'elevated') then
+    ElevatedCoreEnabled := True;
 
   InstallProgressPage := CreateOutputProgressPage(
     GetLocalizedMessage('OfflineProgressCaption'),
@@ -368,20 +200,7 @@ begin
   DesktopShortcutCheckBox.Checked := True;
 end;
 
-function ShouldSkipPage(PageID: Integer): Boolean;
-var
-  PreserveExisting: Boolean;
-begin
-  PreserveExisting := ExistingInstallDetected and (UpgradeModePage.SelectedValueIndex = 0);
-  Result :=
-    ((PageID = UpgradeModePage.ID) and (not ExistingInstallDetected)) or
-    (PreserveExisting and
-      ((PageID = StartupPage.ID) or (PageID = ConnectionPage.ID) or
-       ((PageID = FixedTunnelPage.ID) and ExistingTunnelTokenUsable))) or
-    ((PageID = FixedTunnelPage.ID) and (SelectedTunnelMode() <> 'named'));
-end;
-
-function ApplyDesktopControlPanelShortcut(CreateRequested: Boolean): Boolean;
+function ApplyDesktopShortcut(CreateRequested: Boolean): Boolean;
 var
   ShortcutPath: String;
   CreatedShortcutPath: String;
@@ -401,7 +220,7 @@ begin
     ExpandConstant('{app}\bin\agentdock-tray.exe'),
     '',
     ExpandConstant('{app}'),
-    ExpandConstant('{app}\installer\agentdock.ico'),
+    ExpandConstant('{app}\bin\agentdock-tray.exe'),
     0,
     SW_SHOWNORMAL
   );
@@ -409,13 +228,11 @@ begin
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
-var
-  URL: String;
 begin
   Result := True;
   if CurPageID = wpFinished then
   begin
-    if not ApplyDesktopControlPanelShortcut(DesktopShortcutCheckBox.Checked) then
+    if not ApplyDesktopShortcut(DesktopShortcutCheckBox.Checked) then
       Log('AgentDock desktop shortcut state could not be applied.');
     if Pos('runtime-launch-deferred', InstallWarningCode) = 0 then
     begin
@@ -426,53 +243,26 @@ begin
       Log('AgentDock runtime activation was deferred; skipping Finish-page control panel launch.');
     Exit;
   end;
-  if (CurPageID = StartupPage.ID) and StartupPage.Values[1] then
-    StartupPage.Values[0] := True;
-  if (CurPageID = ConnectionPage.ID) and (SelectedTunnelMode() <> 'none') then
-    StartupPage.Values[0] := True;
-  if CurPageID = FixedTunnelPage.ID then
-  begin
-    URL := Trim(FixedTunnelPage.Values[0]);
-    if (Pos('https://', Lowercase(URL)) <> 1) or (Pos('"', URL) > 0) then
-    begin
-      MsgBox(GetLocalizedMessage('InvalidServerURL'), mbError, MB_OK);
-      Result := False;
-      Exit;
-    end;
-    if (Trim(FixedTunnelPage.Values[1]) = '') and
-      (ExpandConstant('{param:TUNNELTOKENFILE|}') = '') then
-    begin
-      ExistingTunnelTokenUsable := ProtectedTextCanBeRead(
-        AddBackslash(ExistingInstallRoot()) + 'cloudflared-token.dpapi',
-        'agentdock.cloudflare.tunnel.v1');
-      if not ExistingTunnelTokenUsable then
-      begin
-        if WizardSilent then
-        begin
-          Log('AgentDock silent Setup will report the missing or unreadable Tunnel Token through the installer result.');
-          Exit;
-        end;
-        MsgBox(GetLocalizedMessage('TokenRequired'), mbError, MB_OK);
-        Result := False;
-        Exit;
-      end;
-    end;
-  end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   PowerShellPath: String;
+  RuntimePowerShellPath: String;
   InstallScriptPath: String;
+  RuntimeScriptPath: String;
+  RuntimeMetadataPath: String;
+  RuntimeResultFilePath: String;
   OfflineArchivePath: String;
   OfflineChecksumPath: String;
-  OfflineCloudflaredPath: String;
-  TokenFilePath: String;
-  SilentTokenFile: String;
+  RuntimeParameters: String;
+  RuntimeDependency: String;
+  RuntimeMessage: String;
   Parameters: String;
   TunnelMode: String;
   PrivilegeMode: String;
   ExitCode: Integer;
+  RuntimeExitCode: Integer;
   ErrorCode: String;
   ErrorMessage: String;
   ErrorType: String;
@@ -482,79 +272,101 @@ var
   ErrorLine: String;
   ErrorColumn: String;
   ErrorStack: String;
-  DeleteTokenFile: Boolean;
 begin
   Result := '';
   InstallProgressPage.Show;
   try
     InstallProgressPage.SetText(GetLocalizedMessage('OfflineProgressPreparing'), '');
-    InstallProgressPage.SetProgress(1, 4);
+    InstallProgressPage.SetProgress(1, 5);
     ExtractTemporaryFile('install.ps1');
     ExtractTemporaryFile('launch-windows-process.ps1');
+    ExtractTemporaryFile('ensure-windows-runtimes.ps1');
+    ExtractTemporaryFile('runtime-prerequisites.ps1');
+    ExtractTemporaryFile('runtime-bootstrap-probe.ps1');
+    ExtractTemporaryFile('runtime-dependencies.json');
     ExtractTemporaryFile('agentdock_windows_{#PayloadArchitecture}.zip');
     ExtractTemporaryFile('agentdock_windows_{#PayloadArchitecture}.zip.sha256');
-    ExtractTemporaryFile('cloudflared.exe');
 
     PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    { Inno Setup runs as a 32-bit process. The Runtime canary loads the native-architecture
+      Windows App SDK bootstrap DLL, so it must run under native PowerShell rather than SysWOW64. }
+    RuntimePowerShellPath := ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe');
     InstallScriptPath := ExpandConstant('{tmp}\install.ps1');
+    RuntimeScriptPath := ExpandConstant('{tmp}\ensure-windows-runtimes.ps1');
+    RuntimeMetadataPath := ExpandConstant('{tmp}\runtime-dependencies.json');
+    RuntimeResultFilePath := ExpandConstant('{tmp}\agentdock-runtime-result.ini');
     OfflineArchivePath := ExpandConstant('{tmp}\agentdock_windows_{#PayloadArchitecture}.zip');
     OfflineChecksumPath := ExpandConstant('{tmp}\agentdock_windows_{#PayloadArchitecture}.zip.sha256');
-    OfflineCloudflaredPath := ExpandConstant('{tmp}\cloudflared.exe');
     ResultFilePath := ExpandConstant('{tmp}\agentdock-install-result.ini');
+    DeleteFile(RuntimeResultFilePath);
     DeleteFile(ResultFilePath);
-    TunnelMode := SelectedTunnelMode();
-    if StartupPage.Values[1] then
+
+    { Runtime 属于系统共享依赖，必须在 generation 激活前满足。失败时直接终止 Setup，
+      不让 install.ps1 创建或切换半完成的 AgentDock generation。 }
+    InstallProgressPage.SetText(GetLocalizedMessage('RuntimeProgressChecking'), '');
+    InstallProgressPage.SetProgress(2, 5);
+    RuntimeParameters :=
+      '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + QuoteArgument(RuntimeScriptPath) +
+      ' -Architecture {#PayloadArchitecture}' +
+      ' -MetadataPath ' + QuoteArgument(RuntimeMetadataPath) +
+      ' -PayloadArchivePath ' + QuoteArgument(OfflineArchivePath) +
+      ' -ResultFile ' + QuoteArgument(RuntimeResultFilePath);
+    if not Exec(RuntimePowerShellPath, RuntimeParameters, '', SW_HIDE, ewWaitUntilTerminated, RuntimeExitCode) then
+    begin
+      Result := GetLocalizedMessage('RuntimeInstallFailed') + ' prerequisite process could not start.';
+      Exit;
+    end;
+    if RuntimeExitCode <> 0 then
+    begin
+      RuntimeDependency := GetIniString('AgentDockRuntime', 'Dependency', '', RuntimeResultFilePath);
+      RuntimeMessage := GetIniString('AgentDockRuntime', 'Message', '', RuntimeResultFilePath);
+      if RuntimeMessage = '' then
+        RuntimeMessage := 'exit code ' + IntToStr(RuntimeExitCode);
+      if RuntimeDependency <> '' then
+        RuntimeMessage := RuntimeDependency + ': ' + RuntimeMessage;
+      Result := GetLocalizedMessage('RuntimeInstallFailed') + ' ' + RuntimeMessage;
+      Exit;
+    end;
+    { MODE/SERVERURL/TUNNELTOKENFILE 仅保留给历史 silent automation。交互式 Setup
+      不再提供 Cloudflare 配置页，空 MODE 会让基础安装完全绕开 component lifecycle。 }
+    TunnelMode := Lowercase(Trim(ExpandConstant('{param:MODE|}')));
+    if TunnelMode = 'local' then
+      TunnelMode := 'none';
+    if (TunnelMode <> 'none') and (TunnelMode <> 'quick') and (TunnelMode <> 'named') then
+      TunnelMode := '';
+    if ElevatedCoreEnabled then
       PrivilegeMode := 'elevated'
     else
       PrivilegeMode := 'standard';
-    DeleteTokenFile := False;
 
-    InstallProgressPage.SetProgress(2, 4);
+    InstallProgressPage.SetProgress(3, 5);
     Parameters :=
       '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + QuoteArgument(InstallScriptPath) +
-      ' -Version ' + QuoteArgument('{#AppVersion}') +
       ' -OfflineArchive ' + QuoteArgument(OfflineArchivePath) +
       ' -OfflineChecksumFile ' + QuoteArgument(OfflineChecksumPath) +
-      ' -OfflineCloudflaredBinary ' + QuoteArgument(OfflineCloudflaredPath) +
       ' -InstallDir ' + QuoteArgument(ExpandConstant('{app}\bin')) +
-      ' -TunnelMode ' + TunnelMode +
       ' -InstallChannel setup' +
+      ' -StartupMode ' + SetupStartupMode +
       ' -CorePrivilegeMode ' + PrivilegeMode +
       ' -ResultFile ' + QuoteArgument(ResultFilePath);
+    if TunnelMode <> '' then
+      Parameters := Parameters + ' -TunnelMode ' + TunnelMode;
 
     { PORT is intentionally a silent-setup override. The interactive installer keeps the product
       default, while isolated E2E environments can avoid colliding with an already running AgentDock. }
     if Trim(ExpandConstant('{param:PORT|}')) <> '' then
       Parameters := Parameters + ' -Port ' + QuoteArgument(Trim(ExpandConstant('{param:PORT|}')));
 
-    if StartupPage.Values[0] or (TunnelMode <> 'none') then
-      Parameters := Parameters + ' -RegisterStartup';
-
     if TunnelMode = 'named' then
     begin
-      Parameters := Parameters + ' -ServerUrl ' + QuoteArgument(Trim(FixedTunnelPage.Values[0]));
-      SilentTokenFile := ExpandConstant('{param:TUNNELTOKENFILE|}');
-      if SilentTokenFile <> '' then
-        TokenFilePath := SilentTokenFile
-      else if Trim(FixedTunnelPage.Values[1]) <> '' then
-      begin
-        TokenFilePath := ExpandConstant('{tmp}\agentdock-tunnel-token.txt');
-        TemporaryTokenFilePath := TokenFilePath;
-        DeleteTokenFile := True;
-        if not SaveStringToFile(TokenFilePath, Trim(FixedTunnelPage.Values[1]), False) then
-        begin
-          Result := GetLocalizedMessage('TokenFileFailed');
-          Exit;
-        end;
-      end;
-      if TokenFilePath <> '' then
-        Parameters := Parameters + ' -TunnelTokenFile ' + QuoteArgument(TokenFilePath);
-      if DeleteTokenFile then
-        Parameters := Parameters + ' -DeleteTunnelTokenFile';
+      if Trim(ExpandConstant('{param:SERVERURL|}')) <> '' then
+        Parameters := Parameters + ' -ServerUrl ' + QuoteArgument(Trim(ExpandConstant('{param:SERVERURL|}')));
+      if Trim(ExpandConstant('{param:TUNNELTOKENFILE|}')) <> '' then
+        Parameters := Parameters + ' -TunnelTokenFile ' + QuoteArgument(Trim(ExpandConstant('{param:TUNNELTOKENFILE|}')));
     end;
 
     InstallProgressPage.SetText(GetLocalizedMessage('OfflineProgressApplying'), '');
-    InstallProgressPage.SetProgress(3, 4);
+    InstallProgressPage.SetProgress(4, 5);
     if not Exec(PowerShellPath, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then
     begin
       Result := GetLocalizedMessage('InstallerStartFailed');
@@ -581,8 +393,6 @@ begin
         Log('AgentDock installation stack: ' + ErrorStack);
       if ErrorCode = 'setup-elevated-context' then
         ErrorMessage := GetLocalizedMessage('ElevatedSetupUnsupported');
-      if ErrorCode = 'tunnel-token-required' then
-        ErrorMessage := GetLocalizedMessage('TokenRecoveryRequired');
       if ErrorCode = 'credential-user-mismatch' then
         ErrorMessage := GetLocalizedMessage('CredentialUserMismatch');
       if ErrorMessage = '' then
@@ -597,7 +407,7 @@ begin
     if InstallWarningMessage <> '' then
       Log('AgentDock installation warning detail: ' + InstallWarningMessage);
     InstallProgressPage.SetText(GetLocalizedMessage('OfflineProgressFinishing'), '');
-    InstallProgressPage.SetProgress(4, 4);
+    InstallProgressPage.SetProgress(5, 5);
   finally
     InstallProgressPage.Hide;
   end;
@@ -605,8 +415,6 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  if (CurPageID = wpReady) and ExistingInstallDetected then
-    WizardForm.ReadyLabel.Caption := GetLocalizedMessage('ReadyUpgrade');
   if CurPageID = wpFinished then
   begin
     if Pos('runtime-launch-deferred', InstallWarningCode) > 0 then
@@ -627,7 +435,7 @@ begin
     PurgeState := MsgBox(
       GetLocalizedMessage('PurgeStateQuestion'),
       mbConfirmation,
-      MB_YESNO
+      MB_YESNO or MB_DEFBUTTON2
     ) = IDYES;
   Result := True;
 end;
@@ -704,6 +512,4 @@ begin
   PersistSetupLog();
   if ResultFilePath <> '' then
     DeleteFile(ResultFilePath);
-  if TemporaryTokenFilePath <> '' then
-    DeleteFile(TemporaryTokenFilePath);
 end;

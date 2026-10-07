@@ -15,10 +15,82 @@ struct DesktopServiceStatusPayload: Decodable {
     }
 }
 
-struct DesktopUpdateRegistrationState {
+struct RuntimeExtensionOverview: Equatable {
+    let available: Bool
+    let skillCount: Int
+    let pluginCount: Int
+    let pluginsAvailable: Bool
+    let mcpCount: Int
+
+    static let unavailable = RuntimeExtensionOverview(
+        available: false,
+        skillCount: 0,
+        pluginCount: 0,
+        pluginsAvailable: false,
+        mcpCount: 0
+    )
+}
+
+private struct RuntimeOverviewCountPayload: Decodable {
+    let count: Int
+}
+
+private struct RuntimeOverviewPluginsPayload: Decodable {
+    let count: Int
+    let available: Bool
+}
+
+private struct RuntimeOverviewPayload: Decodable {
+    let skills: RuntimeOverviewCountPayload
+    let plugins: RuntimeOverviewPluginsPayload
+    let mcp: RuntimeOverviewCountPayload
+}
+
+struct DesktopUpdateRegistrationState: Sendable {
     let core: String
     let tunnel: String
 }
+
+private struct TunnelStatusPayload: Decodable {
+    let mode: String
+    let running: Bool
+    let ready: Bool
+    let publicURL: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case mode, running, ready
+        case publicURL = "public_url"
+    }
+}
+
+struct CloudflaredComponentStatus: Decodable, Equatable, Sendable {
+    let state: String
+    let installed: Bool
+    let ready: Bool
+    let version: String?
+    let detail: String?
+
+    static let unavailable = CloudflaredComponentStatus(
+        state: "broken",
+        installed: false,
+        ready: false,
+        version: nil,
+        detail: nil
+    )
+}
+
+struct CloudflaredComponentProgress: Decodable, Equatable, Sendable {
+    let type: String
+    let stage: String?
+    let bytes: Int64?
+    let total: Int64?
+}
+
+private struct CloudflaredComponentProcessResult {
+    let exitStatus: Int32
+    let status: CloudflaredComponentStatus?
+}
+
 
 enum NexusConnectionState: Equatable {
     case unconfigured
@@ -86,23 +158,210 @@ struct ServiceStatus {
     )
 }
 
+struct RuntimeDiagnosticCall: Decodable, Identifiable {
+    let id: String
+    let tool: String
+    let source: String
+    let startedAt: String
+    let durationMS: Double
+    let success: Bool
+    let errorCode: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, tool, source, success
+        case startedAt = "started_at"
+        case durationMS = "duration_ms"
+        case errorCode = "error_code"
+    }
+}
+
+struct RuntimeDiagnosticsPayload: Decodable {
+    let recentCalls: [RuntimeDiagnosticCall]
+
+    private enum CodingKeys: String, CodingKey {
+        case recentCalls = "recent_calls"
+    }
+}
+
+struct RuntimeAnalyticsStage: Decodable, Identifiable {
+    let name: String
+    let startedOffsetMS: Double
+    let durationMS: Double
+    let success: Bool
+
+    var id: String { "\(name)-\(startedOffsetMS)-\(durationMS)" }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, success
+        case startedOffsetMS = "started_offset_ms"
+        case durationMS = "duration_ms"
+    }
+}
+
+struct RuntimeAnalyticsCall: Decodable, Identifiable {
+    let id: UInt64
+    let tool: String
+    let source: String
+    let startedAt: String
+    let durationMS: Double
+    let success: Bool
+    let errorCode: String?
+    let errorCategory: String?
+    let stages: [RuntimeAnalyticsStage]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, tool, source, success, stages
+        case startedAt = "started_at"
+        case durationMS = "duration_ms"
+        case errorCode = "error_code"
+        case errorCategory = "error_category"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UInt64.self, forKey: .id)
+        tool = try container.decode(String.self, forKey: .tool)
+        source = try container.decode(String.self, forKey: .source)
+        startedAt = try container.decode(String.self, forKey: .startedAt)
+        durationMS = try container.decode(Double.self, forKey: .durationMS)
+        success = try container.decode(Bool.self, forKey: .success)
+        errorCode = try container.decodeIfPresent(String.self, forKey: .errorCode)
+        errorCategory = try container.decodeIfPresent(String.self, forKey: .errorCategory)
+        stages = try container.decodeIfPresent([RuntimeAnalyticsStage].self, forKey: .stages) ?? []
+    }
+}
+
+struct RuntimeToolStats: Decodable, Identifiable {
+    let tool: String
+    let count: Int
+    let errorCount: Int
+    let errorRate: Double
+    let p50DurationMS: Double
+    let p95DurationMS: Double
+    let p99DurationMS: Double
+
+    var id: String { tool }
+
+    private enum CodingKeys: String, CodingKey {
+        case tool, count
+        case errorCount = "error_count"
+        case errorRate = "error_rate"
+        case p50DurationMS = "p50_duration_ms"
+        case p95DurationMS = "p95_duration_ms"
+        case p99DurationMS = "p99_duration_ms"
+    }
+}
+
+struct RuntimeProcessSnapshot: Decodable {
+    let goroutines: Int
+    let heapAllocBytes: UInt64
+    let heapInuseBytes: UInt64
+    let heapSysBytes: UInt64
+    let gcCycles: UInt32
+    let uptimeMS: Int64
+
+    private enum CodingKeys: String, CodingKey {
+        case goroutines
+        case heapAllocBytes = "heap_alloc_bytes"
+        case heapInuseBytes = "heap_inuse_bytes"
+        case heapSysBytes = "heap_sys_bytes"
+        case gcCycles = "gc_cycles"
+        case uptimeMS = "uptime_ms"
+    }
+}
+
+struct RuntimeAnalyticsPayload: Decodable {
+    let startedAt: String
+    let recentCapacity: Int
+    let windowCalls: Int
+    let totalCalls: UInt64
+    let totalErrors: UInt64
+    let activeCalls: Int
+    let toolStats: [RuntimeToolStats]
+    let recentCalls: [RuntimeAnalyticsCall]
+    let process: RuntimeProcessSnapshot
+
+    private enum CodingKeys: String, CodingKey {
+        case process
+        case startedAt = "started_at"
+        case recentCapacity = "recent_capacity"
+        case windowCalls = "window_calls"
+        case totalCalls = "total_calls"
+        case totalErrors = "total_errors"
+        case activeCalls = "active_calls"
+        case toolStats = "tool_stats"
+        case recentCalls = "recent_calls"
+    }
+}
+
+struct RuntimeDashboardSnapshot {
+    let countsAvailable: Bool
+    let diagnosticsAvailable: Bool
+    let skillCount: Int
+    let mcpCount: Int
+    let pluginCount: Int
+    let recentCalls: [RuntimeDiagnosticCall]
+
+    static let empty = RuntimeDashboardSnapshot(
+        countsAvailable: false,
+        diagnosticsAvailable: false,
+        skillCount: 0,
+        mcpCount: 0,
+        pluginCount: 0,
+        recentCalls: []
+    )
+}
+
 final class ServiceController: @unchecked Sendable {
     static let coreLabel = "com.uvwt.agentdock.core"
     static let tunnelLabel = "com.uvwt.agentdock.tunnel"
     static let corePlistName = "com.uvwt.agentdock.core.plist"
     static let tunnelPlistName = "com.uvwt.agentdock.tunnel.plist"
+    private static let quickTunnelReadyTimeout: TimeInterval = 85
 
     let paths: AppPaths
+    let lifecycleCoordinator = BackgroundServiceLifecycleCoordinator()
+
+    final class LifecycleTransaction: @unchecked Sendable {
+        private let service: ServiceController
+
+        fileprivate init(service: ServiceController) {
+            self.service = service
+        }
+
+        func start() async throws -> BackgroundServiceLifecycleResult {
+            try await service.startWithinLifecycle(forceCoreRestart: false)
+        }
+
+        func stop() throws {
+            try service.stopWithinLifecycle()
+        }
+
+        func restart() async throws -> BackgroundServiceLifecycleResult {
+            try await service.startWithinLifecycle(forceCoreRestart: true)
+        }
+
+        func setTunnelEnabled(_ enabled: Bool) throws {
+            try service.setTunnelEnabledWithinLifecycle(enabled)
+        }
+    }
 
     init(paths: AppPaths = AppPaths()) {
         self.paths = paths
+    }
+
+    func withLifecycleTransaction<T: Sendable>(
+        _ operation: @escaping @Sendable (LifecycleTransaction) async throws -> T
+    ) async throws -> T {
+        try await lifecycleCoordinator.run {
+            try await operation(LifecycleTransaction(service: self))
+        }
     }
 
     func status() async -> ServiceStatus {
         let fileManager = FileManager.default
         let migrationRequired = LegacyDesktopRuntimeMigration.isPresent(paths: paths)
         let installed = fileManager.isExecutableFile(atPath: paths.binary.path)
-            && fileManager.isExecutableFile(atPath: paths.cloudflared.path)
             && fileManager.fileExists(atPath: paths.coreSkillBundle.appendingPathComponent("manifest.json").path)
             && fileManager.fileExists(atPath: paths.environment.path)
         guard installed else { return .missing }
@@ -144,19 +403,57 @@ final class ServiceController: @unchecked Sendable {
         )
     }
 
-    func start() async throws {
-        try registerCoreIfNeeded()
-        guard let configuration = ServiceConfiguration.load(from: paths.environment),
-              await waitForHealth(configuration: configuration) else {
-            throw ValidationError(L10n.text("AgentDock background service is enabled, but the health check did not pass."))
+    func dashboard(configuration: ServiceConfiguration?) async -> RuntimeDashboardSnapshot {
+        guard let configuration else { return .empty }
+
+        async let overviewTask: RuntimeOverviewPayload? = fetchRuntimePayload(
+            RuntimeOverviewPayload.self,
+            configuration: configuration,
+            path: "/internal/runtime/overview"
+        )
+        async let diagnosticsTask: RuntimeDiagnosticsPayload? = fetchRuntimePayload(
+            RuntimeDiagnosticsPayload.self,
+            configuration: configuration,
+            path: "/internal/runtime/diagnostics"
+        )
+        let overviewPayload = await overviewTask
+
+        let diagnosticsPayload = await diagnosticsTask
+        return RuntimeDashboardSnapshot(
+            countsAvailable: overviewPayload != nil,
+            diagnosticsAvailable: diagnosticsPayload != nil,
+            skillCount: overviewPayload?.skills.count ?? 0,
+            mcpCount: overviewPayload?.mcp.count ?? 0,
+            pluginCount: overviewPayload?.plugins.count ?? 0,
+            recentCalls: diagnosticsPayload?.recentCalls ?? []
+        )
+    }
+
+    func runtimeAnalytics(configuration: ServiceConfiguration?) async -> RuntimeAnalyticsPayload? {
+        guard let configuration else { return nil }
+        return await fetchRuntimePayload(
+            RuntimeAnalyticsPayload.self,
+            configuration: configuration,
+            path: "/internal/runtime/analytics"
+        )
+    }
+
+    func start() async throws -> BackgroundServiceLifecycleResult {
+        try await withLifecycleTransaction { lifecycle in
+            try await lifecycle.start()
         }
     }
 
     func stop() async throws {
-        try unregister(service: coreService, label: Self.coreLabel)
+        try await withLifecycleTransaction { lifecycle in
+            try lifecycle.stop()
+        }
     }
 
     func unregisterManagedBackgroundServicesForUninstall() throws {
+        // 仅供 main.swift 的独立 --unregister-background-services helper 进程调用。
+        // 该进程不会启动 AppDelegate，也不存在并发生命周期 mutation；正常 App 路径
+        // 必须通过 lifecycleCoordinator，不能复用这个同步逃生口。
         var failures: [String] = []
         do {
             try unregister(service: tunnelService, label: Self.tunnelLabel)
@@ -173,16 +470,46 @@ final class ServiceController: @unchecked Sendable {
         }
     }
 
-    func restart() async throws {
-        try reregister(service: coreService, label: Self.coreLabel, displayName: "AgentDock Core")
-        guard let configuration = ServiceConfiguration.load(from: paths.environment),
-              await waitForHealth(configuration: configuration) else {
-            throw ValidationError(L10n.text("AgentDock Core was re-registered, but the health check did not pass."))
+    func restart() async throws -> BackgroundServiceLifecycleResult {
+        try await withLifecycleTransaction { lifecycle in
+            try await lifecycle.restart()
         }
     }
 
     func nexusDeviceStatus() -> NexusDeviceStatus {
         NexusDeviceStatus.load(from: paths.nexusDeviceIdentity)
+    }
+
+    func runtimeExtensionOverview(configuration: ServiceConfiguration?) async -> RuntimeExtensionOverview {
+        guard let configuration,
+              let healthURL = configuration.healthURL,
+              var components = URLComponents(url: healthURL, resolvingAgainstBaseURL: false) else {
+            return .unavailable
+        }
+        components.path = "/internal/runtime/overview"
+        components.query = nil
+        components.fragment = nil
+        guard let url = components.url else { return .unavailable }
+
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 2.5
+            if !configuration.authToken.isEmpty {
+                request.setValue("Bearer \(configuration.authToken)", forHTTPHeaderField: "Authorization")
+            }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return .unavailable }
+            let payload = try JSONDecoder().decode(RuntimeOverviewPayload.self, from: data)
+            return RuntimeExtensionOverview(
+                available: true,
+                skillCount: max(0, payload.skills.count),
+                pluginCount: max(0, payload.plugins.count),
+                pluginsAvailable: payload.plugins.available,
+                mcpCount: max(0, payload.mcp.count)
+            )
+        } catch {
+            return .unavailable
+        }
     }
 
     func pairNexus(endpoint: String, pairingCode: String) async throws {
@@ -191,21 +518,23 @@ final class ServiceController: @unchecked Sendable {
         guard !endpoint.isEmpty, !pairingCode.isEmpty else {
             throw ValidationError(L10n.text("NexusDock address and one-time pairing code cannot be empty."))
         }
-        let result = try await runInBackground {
-            try runProcess(
-                executable: self.paths.binary.path,
-                arguments: ["nexus", "pair", "--endpoint", endpoint, "--code", pairingCode]
-            )
+        try await withLifecycleTransaction { lifecycle in
+            let result = try await self.runInBackground {
+                try runProcess(
+                    executable: self.paths.binary.path,
+                    arguments: ["nexus", "pair", "--endpoint", endpoint, "--code", pairingCode]
+                )
+            }
+            guard result.status == 0 else {
+                throw ValidationError(self.commandError(result.output, action: L10n.text("NexusDock pairing")))
+            }
+            _ = try await lifecycle.restart()
         }
-        guard result.status == 0 else {
-            throw ValidationError(commandError(result.output, action: L10n.text("NexusDock pairing")))
-        }
-        try await restart()
     }
 
     func setAutostart(enabled: Bool) async throws {
         if enabled {
-            try await start()
+            _ = try await start()
         } else {
             try await stop()
         }
@@ -214,6 +543,306 @@ final class ServiceController: @unchecked Sendable {
     func tunnelEnabled() -> Bool {
         let status = tunnelService.status
         return status == .enabled || status == .requiresApproval
+    }
+
+    func cloudflaredComponentStatus() async -> CloudflaredComponentStatus {
+        do {
+            let result = try await runInBackground {
+                try runProcess(
+                    executable: self.paths.binary.path,
+                    arguments: [
+                        "component", "status", "cloudflared",
+                        "--runtime-root", self.paths.appSupport.path,
+                        "--json",
+                    ]
+                )
+            }
+            guard result.status == 0,
+                  let data = result.output.data(using: .utf8),
+                  let status = try? JSONDecoder().decode(CloudflaredComponentStatus.self, from: data) else {
+                return .unavailable
+            }
+            return status
+        } catch {
+            return .unavailable
+        }
+    }
+
+    func bootstrapBundledCoreSkillsForUpdate() async throws {
+        let result = try await runInBackground {
+            try runProcess(
+                executable: self.paths.binary.path,
+                arguments: ["skill", "bootstrap", "--bundle", self.paths.coreSkillBundle.path]
+            )
+        }
+        guard result.status == 0 else {
+            throw ValidationError(
+                result.output.isEmpty
+                    ? L10n.text("Official core Skill initialization failed.")
+                    : result.output
+            )
+        }
+    }
+
+    func migrateLegacyCloudflaredIfNeeded(source: URL?, required: Bool) async throws {
+        try await lifecycleCoordinator.run {
+            try await self.migrateLegacyCloudflaredWithinLifecycle(source: source, required: required)
+        }
+    }
+
+    private func migrateLegacyCloudflaredWithinLifecycle(source: URL?, required: Bool) async throws {
+        let current = await cloudflaredComponentStatus()
+        guard !current.ready, required else { return }
+        guard let source else {
+            throw ValidationError(L10n.text("Cloudflare Tunnel is configured, but its optional component is missing. Repair the component before updating AgentDock."))
+        }
+        let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw ValidationError(L10n.text("Cloudflare Tunnel is configured, but the legacy component cannot be migrated safely."))
+        }
+        let result = try await runInBackground {
+            try runProcess(
+                executable: self.paths.binary.path,
+                arguments: [
+                    "component", "__import-legacy", "cloudflared",
+                    "--runtime-root", self.paths.appSupport.path,
+                    "--source", source.path,
+                    "--json",
+                ]
+            )
+        }
+        guard result.status == 0 else {
+            throw ValidationError(L10n.text("Cloudflare Tunnel component migration failed. The AgentDock update was not committed."))
+        }
+        let migrated = await cloudflaredComponentStatus()
+        guard migrated.ready else {
+            throw ValidationError(L10n.text("Cloudflare Tunnel component migration did not produce a ready component."))
+        }
+    }
+
+    func installCloudflaredComponent(
+        onProgress: ((CloudflaredComponentProgress) -> Void)? = nil
+    ) async throws -> CloudflaredComponentStatus {
+        try await lifecycleCoordinator.run {
+            try await self.runCloudflaredComponentAction("install", onProgress: onProgress)
+        }
+    }
+
+    func updateCloudflaredComponent(
+        onProgress: ((CloudflaredComponentProgress) -> Void)? = nil
+    ) async throws -> CloudflaredComponentStatus {
+        try await lifecycleCoordinator.run {
+            try await self.runCloudflaredComponentAction("update", onProgress: onProgress)
+        }
+    }
+
+    func uninstallCloudflaredComponent() async throws -> CloudflaredComponentStatus {
+        try await lifecycleCoordinator.run {
+            let mode = try self.configuredTunnelMode()
+            if mode != .local {
+                try self.setTunnelEnabledWithinLifecycle(false)
+                try await self.configureTunnelWithinLifecycle(mode: .local, serverURL: "", tunnelToken: "")
+            }
+            return try await self.runCloudflaredComponentAction("uninstall")
+        }
+    }
+
+    func configureTunnel(mode: TunnelMode, serverURL: String, tunnelToken: String) async throws {
+        try await lifecycleCoordinator.run {
+            try await self.configureTunnelWithinLifecycle(
+                mode: mode,
+                serverURL: serverURL,
+                tunnelToken: tunnelToken
+            )
+        }
+    }
+
+    private func configureTunnelWithinLifecycle(
+        mode: TunnelMode,
+        serverURL: String,
+        tunnelToken: String
+    ) async throws {
+        if mode != .local {
+            let component = await cloudflaredComponentStatus()
+            guard component.ready else {
+                throw ValidationError(L10n.text("Install the Cloudflare Tunnel component first."))
+            }
+        }
+
+        let wasEnabled = tunnelEnabled()
+        if wasEnabled {
+            try setTunnelEnabledWithinLifecycle(false)
+        }
+
+        let tokenFile = try writeTemporaryTunnelToken(tunnelToken)
+        defer {
+            if let tokenFile { try? FileManager.default.removeItem(at: tokenFile) }
+        }
+
+        var arguments = [
+            "tunnel", "configure",
+            "--runtime-root", paths.appSupport.path,
+            "--mode", mode.rawValue,
+            "--server-url", serverURL,
+        ]
+        if let tokenFile {
+            arguments += ["--token-file", tokenFile.path]
+        }
+
+        do {
+            let result = try await runInBackground {
+                try runProcess(executable: self.paths.binary.path, arguments: arguments)
+            }
+            guard result.status == 0 else {
+                throw ValidationError(commandError(result.output, action: L10n.text("Tunnel configuration")))
+            }
+            if mode != .local {
+                try setTunnelEnabledWithinLifecycle(true)
+            }
+            if mode == .quick {
+                try await waitForQuickTunnelReady()
+            }
+        } catch {
+            if wasEnabled {
+                try? setTunnelEnabledWithinLifecycle(true)
+            }
+            throw error
+        }
+    }
+
+    private func waitForQuickTunnelReady() async throws {
+        let deadline = Date().addingTimeInterval(Self.quickTunnelReadyTimeout)
+        var sawReadyAddress = false
+
+        while Date() < deadline {
+            try Task.checkCancellation()
+
+            let statusResult = try await runInBackground {
+                try runProcess(
+                    executable: self.paths.binary.path,
+                    arguments: [
+                        "tunnel", "status",
+                        "--runtime-root", self.paths.appSupport.path,
+                    ]
+                )
+            }
+            if statusResult.status == 0,
+               let data = statusResult.output.data(using: .utf8),
+               let tunnelStatus = try? JSONDecoder().decode(TunnelStatusPayload.self, from: data),
+               tunnelStatus.mode == TunnelMode.quick.rawValue,
+               tunnelStatus.running,
+               tunnelStatus.ready,
+               let publicURL = tunnelStatus.publicURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !publicURL.isEmpty {
+                sawReadyAddress = true
+
+                if let configuration = ServiceConfiguration.load(from: paths.environment),
+                   configuration.publicURL == publicURL,
+                   await coreReadyForCurrentApp(configuration: configuration, timeout: 5) {
+                    return
+                }
+            }
+
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        if sawReadyAddress {
+            throw ValidationError(L10n.text(
+                "A temporary public address was generated, but AgentDock Core did not recover to a healthy state."
+            ))
+        }
+        throw ValidationError(L10n.text(
+            "cloudflared did not generate a temporary public address before the timeout."
+        ))
+    }
+
+    func configuredNamedTunnelOrigin() -> String {
+        let path = paths.appSupport.appendingPathComponent("named-server-url.txt")
+        guard let data = try? Data(contentsOf: path),
+              let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return ""
+        }
+        return value
+    }
+
+    private func runCloudflaredComponentAction(
+        _ action: String,
+        onProgress: ((CloudflaredComponentProgress) -> Void)? = nil
+    ) async throws -> CloudflaredComponentStatus {
+        let result = try await runInBackground {
+            try self.runCloudflaredComponentProcess(action: action, onProgress: onProgress)
+        }
+        guard result.exitStatus == 0 else {
+            throw ValidationError(L10n.text("Cloudflare Tunnel component operation failed. Check diagnostics and try again."))
+        }
+        guard let status = result.status else {
+            throw ValidationError(L10n.text("Unable to read Cloudflare Tunnel component status."))
+        }
+        return status
+    }
+
+    private func runCloudflaredComponentProcess(
+        action: String,
+        onProgress: ((CloudflaredComponentProgress) -> Void)?
+    ) throws -> CloudflaredComponentProcessResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: paths.binary.path)
+        process.arguments = [
+            "component", action, "cloudflared",
+            "--runtime-root", paths.appSupport.path,
+            action == "install" || action == "update" ? "--progress-json" : "--json",
+        ]
+
+        // component 的 stdout 是逐行 JSON 协议。安装/更新实时消费进度事件，
+        // 最后一行仍是组件状态；stderr 合流后仅忽略非协议诊断行，失败统一由退出码处理。
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+
+        let handle = pipe.fileHandleForReading
+        var buffered = Data()
+        var finalStatus: CloudflaredComponentStatus?
+
+        func consumeLine(_ data: Data) {
+            guard !data.isEmpty else { return }
+            if let progress = try? JSONDecoder().decode(CloudflaredComponentProgress.self, from: data) {
+                onProgress?(progress)
+                return
+            }
+            if let status = try? JSONDecoder().decode(CloudflaredComponentStatus.self, from: data) {
+                finalStatus = status
+            }
+        }
+
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty { break }
+            buffered.append(chunk)
+            while let newline = buffered.firstIndex(of: 0x0A) {
+                consumeLine(Data(buffered[..<newline]))
+                buffered.removeSubrange(buffered.startIndex...newline)
+            }
+        }
+        consumeLine(buffered)
+        process.waitUntilExit()
+        return CloudflaredComponentProcessResult(
+            exitStatus: process.terminationStatus,
+            status: finalStatus
+        )
+    }
+
+    private func writeTemporaryTunnelToken(_ token: String) throws -> URL? {
+        let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return nil }
+        guard !token.contains("\n"), !token.contains("\r") else {
+            throw ValidationError(L10n.text("Tunnel Token must be a single line of text."))
+        }
+        try FileManager.default.createDirectory(at: paths.appSupport, withIntermediateDirectories: true)
+        let url = paths.appSupport.appendingPathComponent(".tunnel-token.\(UUID().uuidString)")
+        try Data((token + "\n").utf8).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        return url
     }
 
     func configuredTunnelMode() throws -> TunnelMode {
@@ -227,21 +856,7 @@ final class ServiceController: @unchecked Sendable {
         return TunnelMode(rawValue: rawMode) ?? .local
     }
 
-    func reconcileTunnelRegistrationFromConfiguration() throws {
-        // 旧结构仍存在时必须先走迁移事务，不能在旁边提前注册第二套 Tunnel。
-        guard !LegacyDesktopRuntimeMigration.isPresent(paths: paths) else { return }
-
-        // 这里只收敛“是否应注册”的长期配置，不等待 cloudflared 或公网 ready。
-        // 更新 handoff 已负责重新绑定目标 App；普通启动也不应因短暂网络状态重建 SMAppService。
-        switch try configuredTunnelMode() {
-        case .local:
-            try setTunnelEnabled(false)
-        case .quick, .named:
-            try setTunnelEnabled(true)
-        }
-    }
-
-    func setTunnelEnabled(_ enabled: Bool) throws {
+    func setTunnelEnabledWithinLifecycle(_ enabled: Bool) throws {
         if enabled {
             try register(
                 service: tunnelService,
@@ -253,11 +868,14 @@ final class ServiceController: @unchecked Sendable {
         }
     }
 
-    func restartTunnel() throws {
+    private func restartTunnelWithinLifecycle() throws {
         try reregister(service: tunnelService, label: Self.tunnelLabel, displayName: "AgentDock Tunnel")
     }
 
-    func restoreBackgroundServiceRegistrations(coreEnabled: Bool, tunnelEnabled: Bool) throws {
+    private func restoreBackgroundServiceRegistrationsWithinLifecycle(
+        coreEnabled: Bool,
+        tunnelEnabled: Bool
+    ) throws {
         if coreEnabled {
             try restoreRegistration(service: coreService, label: Self.coreLabel, displayName: "AgentDock Core")
         } else {
@@ -271,6 +889,18 @@ final class ServiceController: @unchecked Sendable {
     }
 
     func restoreBackgroundServiceRegistrationsForUpdate(
+        coreEnabled: Bool,
+        tunnelEnabled: Bool
+    ) async throws -> DesktopUpdateRegistrationState {
+        try await lifecycleCoordinator.run {
+            try self.restoreBackgroundServiceRegistrationsForUpdateWithinLifecycle(
+                coreEnabled: coreEnabled,
+                tunnelEnabled: tunnelEnabled
+            )
+        }
+    }
+
+    private func restoreBackgroundServiceRegistrationsForUpdateWithinLifecycle(
         coreEnabled: Bool,
         tunnelEnabled: Bool
     ) throws -> DesktopUpdateRegistrationState {
@@ -299,6 +929,22 @@ final class ServiceController: @unchecked Sendable {
     }
 
     func recoverBackgroundServicesAfterUpdate(coreEnabled: Bool, tunnelEnabled: Bool) async -> [String] {
+        do {
+            return try await lifecycleCoordinator.run {
+                await self.recoverBackgroundServicesAfterUpdateWithinLifecycle(
+                    coreEnabled: coreEnabled,
+                    tunnelEnabled: tunnelEnabled
+                )
+            }
+        } catch {
+            return [error.localizedDescription]
+        }
+    }
+
+    private func recoverBackgroundServicesAfterUpdateWithinLifecycle(
+        coreEnabled: Bool,
+        tunnelEnabled: Bool
+    ) async -> [String] {
         // App Bundle 替换后，SMAppService 可能已经返回 enabled，但 launchd 尚未真正启动 Core。
         // 先给系统一个正常传播窗口；仍不健康时只做一次完整 unregister/register 自愈。
         // 最终更新是否提交仍由外部 Arbiter 的 Core health/version gate 决定。
@@ -308,7 +954,7 @@ final class ServiceController: @unchecked Sendable {
            !(await waitForTunnelProcess()) {
             NSLog("AgentDock Tunnel 注册显示 enabled 但进程未稳定，开始自动重新注册。")
             do {
-                try restartTunnel()
+                try restartTunnelWithinLifecycle()
                 if !(await waitForTunnelProcess()) {
                     NSLog("AgentDock Tunnel 重新注册后进程仍未稳定。")
                 }
@@ -319,11 +965,10 @@ final class ServiceController: @unchecked Sendable {
         }
         if coreEnabled,
            coreService.status == .enabled,
-           let configuration = ServiceConfiguration.load(from: paths.environment),
-           !(await waitForHealth(configuration: configuration, timeout: 10)) {
+           !(await coreReadyForCurrentApp(timeout: 10)) {
             NSLog("AgentDock Core 注册显示 enabled 但健康检查未通过，开始自动重新注册。")
             do {
-                try await restart()
+                _ = try await startWithinLifecycle(forceCoreRestart: true)
             } catch {
                 warnings.append(error.localizedDescription)
             }
@@ -332,8 +977,16 @@ final class ServiceController: @unchecked Sendable {
     }
 
     func reregisterBackgroundServices(coreEnabled: Bool, tunnelEnabled: Bool) async throws -> [String] {
-        try restoreBackgroundServiceRegistrations(coreEnabled: coreEnabled, tunnelEnabled: tunnelEnabled)
-        return await recoverBackgroundServicesAfterUpdate(coreEnabled: coreEnabled, tunnelEnabled: tunnelEnabled)
+        try await lifecycleCoordinator.run {
+            try self.restoreBackgroundServiceRegistrationsWithinLifecycle(
+                coreEnabled: coreEnabled,
+                tunnelEnabled: tunnelEnabled
+            )
+            return await self.recoverBackgroundServicesAfterUpdateWithinLifecycle(
+                coreEnabled: coreEnabled,
+                tunnelEnabled: tunnelEnabled
+            )
+        }
     }
 
     func openBackgroundItemsSettings() {
@@ -377,7 +1030,17 @@ final class ServiceController: @unchecked Sendable {
         }
     }
 
-    func applyUpdate(onProgress: @escaping (UpdateProgressEvent) -> Void) async throws -> String {
+    func applyUpdate(
+        onProgress: @escaping @Sendable (UpdateProgressEvent) -> Void
+    ) async throws -> String {
+        try await lifecycleCoordinator.run {
+            try await self.applyUpdateWithinLifecycle(onProgress: onProgress)
+        }
+    }
+
+    private func applyUpdateWithinLifecycle(
+        onProgress: @escaping @Sendable (UpdateProgressEvent) -> Void
+    ) async throws -> String {
         // 用户确认之后才检查后台服务写入能力并进入停服/替换阶段。
         // 纯版本检查不应该产生任何服务状态或更新事务副作用。
         try validateServiceManagementReadiness()
@@ -387,12 +1050,17 @@ final class ServiceController: @unchecked Sendable {
             coreEnabled: currentStatus.autostartEnabled,
             tunnelEnabled: tunnelEnabled()
         )
+        let configuredMode = (try? configuredTunnelMode()) ?? .local
+        try await migrateLegacyCloudflaredWithinLifecycle(
+            source: paths.legacyBundledCloudflared,
+            required: configuredMode != .local || serviceState.tunnelEnabled
+        )
         try serviceState.write(to: paths.updateServiceState)
 
         let output: String
         do {
-            try setTunnelEnabled(false)
-            try await stop()
+            try setTunnelEnabledWithinLifecycle(false)
+            try stopWithinLifecycle()
             output = try await runInBackground {
                 let result = try runUpdateProcess(
                     executable: self.paths.binary.path,
@@ -409,7 +1077,11 @@ final class ServiceController: @unchecked Sendable {
         } catch {
             let updateError = error
             do {
-                let recoveryWarnings = try await reregisterBackgroundServices(
+                try restoreBackgroundServiceRegistrationsWithinLifecycle(
+                    coreEnabled: serviceState.coreEnabled,
+                    tunnelEnabled: serviceState.tunnelEnabled
+                )
+                let recoveryWarnings = await recoverBackgroundServicesAfterUpdateWithinLifecycle(
                     coreEnabled: serviceState.coreEnabled,
                     tunnelEnabled: serviceState.tunnelEnabled
                 )
@@ -430,7 +1102,11 @@ final class ServiceController: @unchecked Sendable {
         // 真正的 App 替换会终止旧 GUI，并由新版 App 根据 update-result.json 恢复服务。
         // 能执行到这里说明更新进程正常返回但没有完成 GUI handoff，因此旧 GUI 必须自己收尾。
         do {
-            let recoveryWarnings = try await reregisterBackgroundServices(
+            try restoreBackgroundServiceRegistrationsWithinLifecycle(
+                coreEnabled: serviceState.coreEnabled,
+                tunnelEnabled: serviceState.tunnelEnabled
+            )
+            let recoveryWarnings = await recoverBackgroundServicesAfterUpdateWithinLifecycle(
                 coreEnabled: serviceState.coreEnabled,
                 tunnelEnabled: serviceState.tunnelEnabled
             )
@@ -457,34 +1133,22 @@ final class ServiceController: @unchecked Sendable {
         NSWorkspace.shared.open(paths.appSupport)
     }
 
-    func openRuntimeAnalytics(configuration: ServiceConfiguration?) {
-        guard let localMCPURL = configuration?.localMCPURL,
-              var components = URLComponents(url: localMCPURL, resolvingAgainstBaseURL: false),
-              components.scheme == "http",
-              isLoopbackHost(components.host) else {
-            return
-        }
-        components.path = "/analytics"
-        components.query = nil
-        components.fragment = nil
-        guard let analyticsURL = components.url else { return }
-        NSWorkspace.shared.open(analyticsURL)
-    }
-
     private func isLoopbackHost(_ host: String?) -> Bool {
         guard let normalized = host?.lowercased() else { return false }
         return normalized == "localhost" || normalized == "127.0.0.1" || normalized == "::1"
     }
 
-    private var coreService: SMAppService {
+    // 下面这些 module-internal 原语只供 BackgroundServiceLifecycle 的状态机编排；
+    // UI、Installer 和更新流程不得绕过 lifecycleCoordinator 直接调用。
+    var coreService: SMAppService {
         SMAppService.agent(plistName: Self.corePlistName)
     }
 
-    private var tunnelService: SMAppService {
+    var tunnelService: SMAppService {
         SMAppService.agent(plistName: Self.tunnelPlistName)
     }
 
-    private func registerCoreIfNeeded() throws {
+    func registerCoreIfNeeded() throws {
         try register(
             service: coreService,
             plistName: Self.corePlistName,
@@ -524,7 +1188,7 @@ final class ServiceController: @unchecked Sendable {
         }
     }
 
-    private func unregister(service: SMAppService, label: String) throws {
+    func unregister(service: SMAppService, label: String) throws {
         switch service.status {
         case .notRegistered, .notFound:
             return
@@ -541,7 +1205,7 @@ final class ServiceController: @unchecked Sendable {
         }
     }
 
-    private func reregister(service: SMAppService, label: String, displayName: String) throws {
+    func reregister(service: SMAppService, label: String, displayName: String) throws {
         try unregister(service: service, label: label)
         let plistName = label == Self.coreLabel ? Self.corePlistName : Self.tunnelPlistName
         try register(service: service, plistName: plistName, displayName: displayName)
@@ -620,14 +1284,18 @@ final class ServiceController: @unchecked Sendable {
         }
     }
 
-    private func isLoaded(label: String) -> Bool {
+    private func launchdJobPresent(label: String) -> Bool {
         (try? runProcess(
             executable: "/bin/launchctl",
             arguments: ["print", "\(serviceDomain)/\(label)"]
         ).status) == 0
     }
 
-    private func launchdProcessID(label: String) -> Int? {
+    private func isLoaded(label: String) -> Bool {
+        launchdProcessID(label: label) != nil
+    }
+
+    func launchdProcessID(label: String) -> Int? {
         guard let result = try? runProcess(
             executable: "/bin/launchctl",
             arguments: ["print", "\(serviceDomain)/\(label)"]
@@ -640,6 +1308,38 @@ final class ServiceController: @unchecked Sendable {
             return pid
         }
         return nil
+    }
+
+    func kickstartRegisteredService(
+        label: String,
+        displayName: String,
+        killExisting: Bool
+    ) throws {
+        var arguments = ["kickstart"]
+        if killExisting {
+            arguments.append("-k")
+        }
+        arguments.append("\(serviceDomain)/\(label)")
+        let result = try runProcess(executable: "/bin/launchctl", arguments: arguments)
+        guard result.status == 0 else {
+            throw ValidationError(commandError(result.output, action: displayName))
+        }
+    }
+
+    func waitForLaunchdPID(label: String, timeout: TimeInterval) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let deadline = Date().addingTimeInterval(timeout)
+                while Date() < deadline {
+                    if self.launchdProcessID(label: label) != nil {
+                        continuation.resume(returning: true)
+                        return
+                    }
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                continuation.resume(returning: self.launchdProcessID(label: label) != nil)
+            }
+        }
     }
 
     private func waitForStableLaunchdProcess(label: String, timeout: TimeInterval) -> Bool {
@@ -667,10 +1367,10 @@ final class ServiceController: @unchecked Sendable {
     private func waitUntilUnregistered(service: SMAppService, label: String, timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if !isLoaded(label: label), Self.isUnregistered(service.status) { return true }
+            if !launchdJobPresent(label: label), Self.isUnregistered(service.status) { return true }
             Thread.sleep(forTimeInterval: 0.1)
         }
-        return !isLoaded(label: label) && Self.isUnregistered(service.status)
+        return !launchdJobPresent(label: label) && Self.isUnregistered(service.status)
     }
 
     static func isUnregistered(_ status: SMAppService.Status) -> Bool {
@@ -718,13 +1418,43 @@ final class ServiceController: @unchecked Sendable {
         }
     }
 
-    private func fetchHealth(url: URL) async -> HealthPayload? {
+    func fetchHealth(url: URL) async -> HealthPayload? {
         do {
             var request = URLRequest(url: url)
             request.timeoutInterval = 2.5
             let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
             return try JSONDecoder().decode(HealthPayload.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    private func fetchRuntimePayload<T: Decodable>(
+        _ type: T.Type,
+        configuration: ServiceConfiguration,
+        path: String
+    ) async -> T? {
+        guard let localMCPURL = configuration.localMCPURL,
+              var components = URLComponents(url: localMCPURL, resolvingAgainstBaseURL: false),
+              components.scheme == "http",
+              isLoopbackHost(components.host) else {
+            return nil
+        }
+        components.path = path
+        components.query = nil
+        components.fragment = nil
+        guard let url = components.url else { return nil }
+
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 2.5
+            if !configuration.authToken.isEmpty {
+                request.setValue("Bearer \(configuration.authToken)", forHTTPHeaderField: "Authorization")
+            }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            return try JSONDecoder().decode(type, from: data)
         } catch {
             return nil
         }

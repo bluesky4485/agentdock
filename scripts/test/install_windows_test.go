@@ -35,7 +35,6 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 		"[string] $OfflineChecksumFile = ''",
 		"[string] $OfflineCloudflaredBinary = ''",
 		"Using bundled AgentDock payload",
-		"-SourceBinary $OfflineCloudflaredBinary",
 		"agentdock-tray.exe",
 		"agentdock-arbiter.exe",
 		"agentdock-shim.exe",
@@ -43,7 +42,8 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 		"agentdock.ico",
 		"manage-windows.ps1",
 		"Initialize-OAuthCredentials",
-		"named-server-url.txt",
+		"[ValidateSet('legacy', 'preserve', 'enabled', 'disabled')]",
+		"[string] $StartupMode = 'legacy'",
 		"[switch] $ConfigurePublicAccess",
 		"[string] $TunnelTokenFile = ''",
 		"[switch] $DeleteTunnelTokenFile",
@@ -57,7 +57,6 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 		"Unable to prepare current-user startup registry key",
 		"Unable to write current-user startup registry value",
 		"Set-RunValue -RegistryPath $runKey -Name $trayRunValueName",
-		"cloudflared-windows-$Architecture.exe",
 		"Get-Sha256Hex -Path $archivePath",
 		"[System.Security.Cryptography.SHA256]::Create()",
 		"-ErrorRecord $resultErrorRecord",
@@ -72,6 +71,9 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 		"Get-AgentDockTaskState",
 		"Conflicting = $false",
 		"$state.Conflicting = $true",
+		"$state.Legacy = $true",
+		"$coreStartupEnabled = $taskState.Exists -and $taskState.WasEnabled",
+		"$trayStartupEnabled = ($null -ne $previousTrayRunValue) -or ($taskState.Legacy -and $taskState.WasEnabled)",
 		"-RuntimeRoot $runtimeDir",
 		"-StableCorePath $destinationBinary",
 		"-StableTrayPath $destinationTrayBinary",
@@ -87,43 +89,27 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 		"prepare-elevated",
 		"setup-elevated-context",
 		"Start Setup normally under the signed-in account",
-		"$tunnelSupervisorPidPath = Join-Path $runtimeDir 'tunnel-supervisor.pid'",
-		"$tunnelStopOutput = @(& $existingGenerationCore tunnel stop --runtime-root $runtimeDir 2>&1)",
-		"Stop-CloudflaredForUpgrade -BinaryPath $cloudflaredBinary",
 		"Copy-Item -LiteralPath $destinationBinary -Destination $binaryBackup -Force",
 		"Write-ProtectedText -Path $tokenPath",
 		"Write-ProtectedText -Path $PasswordPath",
 		"Write-ProtectedText -Path $TokenSecretPath",
-		"Write-ProtectedText -Path $tunnelTokenPath",
 		"Copy-Item -LiteralPath $binaryBackup -Destination $destinationBinary -Force",
 		"DataProtectionScope]::CurrentUser",
 		"HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
 		"Set-RunValue -RegistryPath $runKey -Name $runValueName",
-		"Set-RunValue -RegistryPath $runKey -Name $cloudflaredRunValueName",
 		"service launch-core --runtime-root",
 		"--start-core --runtime-root",
 		"& $destinationBinary service start --runtime-root $runtimeDir",
-		"--start-tunnel --runtime-root",
-		"$tunnelStartupArguments = \"--start-tunnel --runtime-root",
-		"-FilePath $destinationTrayBinary",
-		"-Arguments $tunnelStartupArguments",
+		"-FilePath $destinationBinary",
 		"-AdminLauncherPath $sourceTrayBinary",
 		"-LauncherPath $destinationTrayBinary",
 		"-FilePath $AdminLauncherPath",
-		"Start-CloudflaredLauncher -LauncherPath $cloudflaredLauncherPath",
-		"quick-tunnel-url.txt",
-		"& '$escapedBinaryPath' tunnel launch --runtime-root '$escapedRuntimeDir'",
 		"RuntimeInformation]::OSArchitecture",
-		"Authentication: Bearer Token and OAuth are both enabled.",
 		"-ErrorCode $resultErrorCode",
 		"$resultErrorCode = 'elevated-task-rollback-failed'",
 		"$resultErrorCode = 'rollback-failed'",
 		"$installWarningCode = 'runtime-launch-deferred'",
 		"$installWarningCode = \"$installWarningCode,runtime-launch-deferred\"",
-		"$installWarningCode = 'tunnel-start-deferred'",
-		"$installWarningCode = \"$installWarningCode,tunnel-start-deferred\"",
-		"Public access is starting in the background.",
-		"Tunnel startup continues in the background; readiness is shown in the control panel and logs.",
 		"-ErrorCode 'install-validation-failed'",
 		"scheduled-task-recovery-",
 		"Recovery files: $taskRecoveryPath",
@@ -142,9 +128,21 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 		"'--payload-dir', $extractDir",
 		"$stableFilesMayBeReplaced = $true",
 		"http://127.0.0.1:$HealthPort/healthz",
+		"[string] $ExpectedVersion = ''",
+		"AgentDock health check requires an expected version.",
+		"$health = $response.Content | ConvertFrom-Json",
+		"$health.ok -eq $true -and $versionMatches",
+		"$successes -ge 2",
+		"Wait-AgentDockHealth -HealthPort $Port -ExpectedVersion $payloadVersion",
+		"Wait-AgentDockHealth -HealthPort $Port -ExpectedVersion $existingActiveVersion",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("install.ps1 missing %q", want)
+		}
+	}
+	for _, line := range strings.Split(script, "\n") {
+		if strings.TrimSpace(line) == "Wait-AgentDockHealth -HealthPort $Port" {
+			t.Fatal("every Windows health gate must pass the expected generation version")
 		}
 	}
 	for _, forbidden := range []string{
@@ -172,8 +170,8 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 			t.Fatalf("install.ps1 must route current-user startup writes through Set-RunValue instead of %q", forbidden)
 		}
 	}
-	if got := strings.Count(script, "Set-RunValue -RegistryPath $runKey"); got != 6 {
-		t.Fatalf("install.ps1 must use Set-RunValue for all startup writes in install and rollback paths; got %d calls", got)
+	if got := strings.Count(script, "Set-RunValue -RegistryPath $runKey"); got != 4 {
+		t.Fatalf("install.ps1 must use Set-RunValue for Core/tray startup writes in install and rollback paths; got %d calls", got)
 	}
 	if strings.Contains(script, "Stop-ProcessesForUpgrade -ProcessName 'agentdock' -BinaryPath $BinaryPath") {
 		t.Fatal("generation Core stop logic must derive the process name from agentdock-core.exe instead of assuming agentdock.exe")
@@ -189,13 +187,6 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 	probeCall := strings.Index(script, "install --engine-ready")
 	if probeCall < 0 || probeCall > legacyPrepareCall {
 		t.Fatal("Release payload must be proven Engine-ready before legacy migration or process mutation")
-	}
-	supervisorStopCall := strings.Index(script, "$tunnelStopOutput = @(& $existingGenerationCore tunnel stop --runtime-root $runtimeDir 2>&1)")
-	cloudflaredStopCall := strings.Index(script, "[void] (Stop-CloudflaredForUpgrade -BinaryPath $cloudflaredBinary)")
-	tunnelTokenWriteCall := strings.Index(script, "Write-ProtectedText -Path $tunnelTokenPath -Value $TunnelToken")
-	if supervisorStopCall < 0 || cloudflaredStopCall < 0 || tunnelTokenWriteCall < 0 ||
-		supervisorStopCall > cloudflaredStopCall || cloudflaredStopCall > tunnelTokenWriteCall {
-		t.Fatal("managed Tunnel supervisor must stop before cloudflared replacement and protected Token mutation")
 	}
 	if strings.Contains(script, "$engineOwnsTargetGeneration") {
 		t.Fatal("generation ownership must be decided by the Installer Engine, not by a PowerShell boolean")
@@ -248,23 +239,19 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 	if strings.Contains(script, "-not $generationUpgradeHandled -and $generationLayoutDetected") {
 		t.Fatal("Setup rollback must stop the target generation even after Update Engine committed")
 	}
-	tunnelArg := strings.Index(script, "'--tunnel-mode', $resolvedTunnelMode")
-	coreStartCall := strings.Index(script, "& $destinationBinary service start --runtime-root $runtimeDir")
-	tunnelProxyCall := strings.Index(script, "$tunnelStartupArguments = \"--start-tunnel --runtime-root")
-	tunnelCommitCall := strings.LastIndex(script, "$commitArgs = @(")
-	if tunnelArg < 0 || coreStartCall < 0 || tunnelProxyCall < 0 || tunnelCommitCall < 0 || tunnelArg > coreStartCall || tunnelCommitCall > tunnelProxyCall {
-		t.Fatal("Installer must pass tunnel intent to the Engine, commit the Core transaction, then launch Tunnel asynchronously")
-	}
-	if strings.Contains(script, "$manifestTunnelMode = 'none'") {
-		t.Fatal("Quick Tunnel must not rewrite Engine tunnel-mode to none")
-	}
-	if !strings.Contains(script, "'--tunnel-mode', $resolvedTunnelMode") {
-		t.Fatal("Engine must receive the real resolved tunnel mode, including quick")
+	for _, forbidden := range []string{
+		"'--tunnel-mode', $resolvedTunnelMode",
+		"$tunnelLaunchArguments = \"tunnel launch --runtime-root",
+		"Start-CloudflaredLauncher -LauncherPath",
+		"'--cloudflared-startup-value-name'",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("base Installer transaction must not own Cloudflare Tunnel lifecycle %q", forbidden)
+		}
 	}
 	for _, identity := range []string{
 		"'--startup-value-name', $runValueName",
 		"'--tray-startup-value-name', $trayRunValueName",
-		"'--cloudflared-startup-value-name', $cloudflaredRunValueName",
 	} {
 		if !strings.Contains(script, identity) {
 			t.Fatalf("Installer Engine must receive the adapter's exact Windows startup identity: %s", identity)
@@ -295,12 +282,8 @@ func TestInstallWindowsUsesChecksumsDPAPIAndCurrentUserStartup(t *testing.T) {
 	}
 	rollbackServiceStart := strings.LastIndex(script, "& $destinationBinary service start --runtime-root $runtimeDir")
 	rollbackHealthWait := strings.LastIndex(script, "Wait-AgentDockHealth -HealthPort $Port")
-	rollbackTunnelProxy := strings.LastIndex(script, "$rollbackTunnelArguments = \"--start-tunnel --runtime-root")
-	if rollbackServiceStart < rollbackRestore || rollbackHealthWait < rollbackServiceStart || rollbackTunnelProxy < rollbackHealthWait {
-		t.Fatal("Engine rollback must restore source Core health before scheduling best-effort Tunnel recovery")
-	}
-	if abandonCall < rollbackTunnelProxy {
-		t.Fatal("install abandon must run after best-effort Tunnel recovery is scheduled")
+	if rollbackServiceStart < rollbackRestore || rollbackHealthWait < rollbackServiceStart {
+		t.Fatal("Engine rollback must restore source Core health before the transaction is abandoned")
 	}
 	if !strings.Contains(script, "--rollback-failed") {
 		t.Fatal("adapter rollback failure must be recorded as failed/rollback_failed, not rolled_back")
@@ -437,7 +420,6 @@ func TestWindowsUninstallerCleansManagedTunnelState(t *testing.T) {
 		"'cloudflared-token.dpapi'",
 		"'cloudflared.out.log'",
 		"'cloudflared.err.log'",
-		"'quick-tunnel-url.txt'",
 		"$runtimeManifestPath = Join-Path $runtimeDir 'runtime.json'",
 		"$runtimeManifest.agentdock_task_name",
 		"$managedTaskName = 'AgentDock'",
@@ -528,7 +510,7 @@ func TestWindowsUninstallerCleansManagedTunnelState(t *testing.T) {
 	}
 }
 func TestWindowsTaskAdminUsesNativeAgentDockHelper(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "desktop", "windows", "control-panel", "Services", "TaskAdminService.cs"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "desktop", "windows", "shared", "Services", "TaskAdminService.cs"))
 	if err != nil {
 		t.Fatalf("read TaskAdminService.cs: %v", err)
 	}
@@ -570,7 +552,7 @@ func TestWindowsTaskAdminUsesNativeAgentDockHelper(t *testing.T) {
 	}
 }
 func TestWindowsElevatedCoreHostUsesKillOnCloseJob(t *testing.T) {
-	jobData, err := os.ReadFile(filepath.Join("..", "..", "desktop", "windows", "control-panel", "Services", "KillOnCloseJob.cs"))
+	jobData, err := os.ReadFile(filepath.Join("..", "..", "desktop", "windows", "shared", "Services", "KillOnCloseJob.cs"))
 	if err != nil {
 		t.Fatalf("read KillOnCloseJob.cs: %v", err)
 	}
@@ -586,7 +568,7 @@ func TestWindowsElevatedCoreHostUsesKillOnCloseJob(t *testing.T) {
 		}
 	}
 
-	runtimeData, err := os.ReadFile(filepath.Join("..", "..", "desktop", "windows", "control-panel", "Services", "RuntimeService.cs"))
+	runtimeData, err := os.ReadFile(filepath.Join("..", "..", "desktop", "windows", "shared", "Services", "RuntimeService.cs"))
 	if err != nil {
 		t.Fatalf("read RuntimeService.cs: %v", err)
 	}
@@ -602,7 +584,7 @@ func TestWindowsElevatedCoreHostUsesKillOnCloseJob(t *testing.T) {
 		}
 	}
 }
-func TestWindowsSetupKeepsPublicAccessExplicitAndSecretsOffCommandLine(t *testing.T) {
+func TestWindowsSetupKeepsMinimalProductSurfaceAndSecretsOffCommandLine(t *testing.T) {
 	var setupBuilder strings.Builder
 	for _, path := range []string{
 		filepath.Join("..", "..", "packaging", "windows", "AgentDock.iss"),
@@ -623,26 +605,22 @@ func TestWindowsSetupKeepsPublicAccessExplicitAndSecretsOffCommandLine(t *testin
 		"#include \"includes\\messages.iss\"",
 		"#include \"includes\\code.iss\"",
 		"DisableDirPage=yes",
+		"DisableReadyPage=yes",
 		"LanguageDetectionMethod=uilanguage",
 		"AgentDock active language: ",
 		"Name: \"chinesesimplified\"",
 		"DetectExistingInstallation",
-		"ExistingInstallSource := 'setup'",
-		"ExistingInstallSource := 'powershell'",
 		"LoadExistingSettings",
 		"LegacyAgentDockScheduledTaskExists",
+		"LegacyTaskDetected := LegacyAgentDockScheduledTaskExists()",
 		"/Query /TN \"\\AgentDock\"",
 		"AgentDock legacy scheduled task detected.",
-		"cloudflared-token.dpapi",
-		"-TunnelMode ",
-		"-TunnelTokenFile ",
-		"-DeleteTunnelTokenFile",
 		"-InstallChannel setup",
+		"-StartupMode ",
 		"-CorePrivilegeMode ",
-		"ElevatedCoreOption",
-		"StartupPage.Values[1] := False",
-		"UpgradeKeepSettings",
-		"UpgradeChangeSettings",
+		"SetupStartupMode := 'enabled'",
+		"SetupStartupMode := 'preserve'",
+		"ElevatedCoreEnabled := False",
 		"RuntimeUsesElevatedCore",
 		"ElevatedSetupUnsupported",
 		"GetIniString('AgentDock', 'Code'",
@@ -665,46 +643,99 @@ func TestWindowsSetupKeepsPublicAccessExplicitAndSecretsOffCommandLine(t *testin
 		"usAppMutexCheck",
 		"managed cleanup completed successfully",
 		"GetUninstallParameters('')",
+		"[InstallDelete]",
 		"[UninstallDelete]",
 		"-KeepInstallDir",
 		"PurgeStateQuestion",
-		"Bearer Token：",
+		"MB_YESNO or MB_DEFBUTTON2",
+		"english.PurgeStateQuestion=Also delete AgentDock user data and settings? Choose No to keep Skills, configuration, and the default working directory.",
+		"chinesesimplified.PurgeStateQuestion=同时删除 AgentDock 的用户数据和设置吗？选择“否”将保留 Skill、配置和默认工作目录。",
 		"AgentDockSetup-amd64",
 		"AgentDockSetup-arm64",
 		"agentdock_windows_{#PayloadArchitecture}.zip",
-		"Source: \"{#OfflinePayloadDir}\\cloudflared.exe\"",
 		"-OfflineArchive ",
 		"-OfflineChecksumFile ",
-		"-OfflineCloudflaredBinary ",
 		"CreateOutputProgressPage",
 		"OfflineProgressDescription",
 		"FinishedControlPanel",
+		"english.FinishedControlPanel=Installation is complete. Open AgentDock from the Start menu or desktop shortcut.",
+		"chinesesimplified.FinishedControlPanel=已完成安装，可从开始菜单或桌面快捷方式打开 AgentDock。",
 		"DesktopShortcutCheckBox",
 		"DesktopShortcutCheckBox.Checked := True",
-		"ApplyDesktopControlPanelShortcut",
+		"ApplyDesktopShortcut",
 		"CreatedShortcutPath := CreateShellLink",
 		"Result := CreatedShortcutPath <> ''",
 		"DesktopShortcutCheckBox.Left := WizardForm.FinishedLabel.Left",
 		"{userdesktop}\\{code:GetLocalizedMessage|DesktopShortcutName}.lnk",
+		"english.DesktopShortcutName=AgentDock",
+		"chinesesimplified.DesktopShortcutName=AgentDock",
+		"{userdesktop}\\AgentDock Control Panel.lnk",
+		"{userdesktop}\\AgentDock 控制面板.lnk",
+		"{app}\\installer\\install.ps1",
+		"{app}\\installer\\ensure-windows-runtimes.ps1",
+		"{app}\\installer\\runtime-dependencies.json",
 		"if CurPageID = wpFinished then",
 		"{app}\\bin\\agentdock-tray.exe",
+		`Source: "..\..\scripts\install\uninstall-windows.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion`,
+		`Source: "assets\agentdock.ico"; DestDir: "{app}\installer"; Flags: ignoreversion`,
 	} {
 		if !strings.Contains(setup, want) {
-			t.Fatalf("AgentDock.iss missing %q", want)
+			t.Fatalf("Windows Setup source missing %q", want)
 		}
 	}
-	if strings.Contains(setup, " -TunnelToken ") {
-		t.Fatal("Setup must pass the Cloudflare Tunnel Token through a temporary file, not process arguments")
-	}
+
 	for _, forbidden := range []string{
 		"ResultMemo",
 		"CopyLocalButton",
 		"GetIniString('AgentDock', 'BearerToken'",
 		"GetIniString('AgentDock', 'OAuthPassword'",
 		"完成后会自动打开控制面板",
+		"点击“完成”后将打开控制面板",
+		"immediate runtime activation or verification",
+		"Startup settings were saved",
+		"运行状态验证",
+		"启动配置已保存",
+		"checking its status",
+		"检查运行状态",
+		"Source: \"{#OfflinePayloadDir}\\cloudflared.exe\"",
+		"-OfflineCloudflaredBinary ",
+		"cloudflared-token.dpapi",
+		"ConnectionPage",
+		"FixedTunnelPage",
+		"probe-protected-text.ps1",
+		"StartupPage",
+		"UpgradeModePage",
+		"UpgradeKeepSettings",
+		"UpgradeChangeSettings",
+		"ApplyExistingInstallPresentation",
+		"ExistingInstallVersion",
+		"ExistingInstallSource",
+		"ReadyUpgrade",
+		"UpgradeWelcome",
+		"UpgradeExistingVersion",
+		"UpgradeTargetVersion",
+		"UpgradeSetupManaged",
+		"UpgradeLegacyManaged",
+		"english.CopyLocal=",
+		"english.CopyPublic=",
+		"english.CopyBearer=",
+		"english.CopyOAuth=",
+		"english.Health=",
+		"english.LocalMCP=",
+		"english.PublicMCP=",
+		"english.BearerToken=",
+		"english.OAuthPassword=",
+		"english.PrivilegeMode=",
+		"english.PrivilegeElevated=",
+		"english.PrivilegeStandard=",
+		"english.DocsShortcut=",
+		"english.UninstallShortcut=",
+		`Source: "..\..\scripts\install\install.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion`,
+		`Source: "ensure-windows-runtimes.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion`,
+		`Source: "runtime-dependencies.json"; DestDir: "{app}\installer"; Flags: ignoreversion`,
 	} {
 		if strings.Contains(setup, forbidden) {
-			t.Fatalf("Setup completion page must not expose connection details or credentials: %q", forbidden)
+			t.Fatalf("Windows Setup must not retain obsolete/internal surface %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{
@@ -717,9 +748,44 @@ func TestWindowsSetupKeepsPublicAccessExplicitAndSecretsOffCommandLine(t *testin
 			t.Fatalf("Setup must not show recommendation or privilege implementation details: %q", forbidden)
 		}
 	}
+
+	startMenuShortcut := `Name: "{group}\AgentDock"; Filename: "{app}\bin\agentdock-tray.exe"; WorkingDir: "{app}"; IconFilename: "{app}\bin\agentdock-tray.exe"; AppUserModelID: "com.uvwt.agentdock.controlpanel"`
+	if !strings.Contains(setup, startMenuShortcut) {
+		t.Fatal("Windows Start menu shortcut must use the AgentDock executable's embedded icon")
+	}
+	iconsStart := strings.Index(setup, "[Icons]")
+	if iconsStart < 0 {
+		t.Fatal("Windows Setup [Icons] section is missing")
+	}
+	iconsTail := setup[iconsStart:]
+	iconsEnd := strings.Index(iconsTail, "#include \"includes\\code.iss\"")
+	if iconsEnd < 0 {
+		t.Fatal("Windows Setup [Icons] section boundary is missing")
+	}
+	iconsSection := iconsTail[:iconsEnd]
+	if got := strings.Count(iconsSection, "Name: "); got != 1 {
+		t.Fatalf("Windows Start menu must expose only AgentDock; got %d shortcut entries", got)
+	}
+
+	shortcutStart := strings.Index(setup, "function ApplyDesktopShortcut")
+	if shortcutStart < 0 {
+		t.Fatal("Windows desktop shortcut function is missing")
+	}
+	shortcutTail := setup[shortcutStart:]
+	shortcutEnd := strings.Index(shortcutTail, "function NextButtonClick")
+	if shortcutEnd < 0 {
+		t.Fatal("Windows desktop shortcut function boundary is missing")
+	}
+	desktopShortcut := shortcutTail[:shortcutEnd]
+	if strings.Contains(desktopShortcut, `{app}\installer\agentdock.ico`) {
+		t.Fatal("Windows desktop shortcut must not use the separately cached installer icon")
+	}
+	if strings.Count(desktopShortcut, `{app}\bin\agentdock-tray.exe`) < 2 {
+		t.Fatal("Windows desktop shortcut must use agentdock-tray.exe for both target and icon source")
+	}
 }
 
-func TestWindowsSetupRepromptsUnreadableNamedTunnelToken(t *testing.T) {
+func TestWindowsSetupDoesNotOwnCloudflareCredentialsOrPayload(t *testing.T) {
 	codeData, err := os.ReadFile(filepath.Join("..", "..", "packaging", "windows", "includes", "code.iss"))
 	if err != nil {
 		t.Fatalf("read code.iss: %v", err)
@@ -732,61 +798,49 @@ func TestWindowsSetupRepromptsUnreadableNamedTunnelToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read install.ps1: %v", err)
 	}
-	probeData, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install", "probe-protected-text.ps1"))
-	if err != nil {
-		t.Fatalf("read probe-protected-text.ps1: %v", err)
-	}
 
 	setup := string(setupData) + "\n" + string(codeData)
-	for _, want := range []string{
+	for _, forbidden := range []string{
 		"probe-protected-text.ps1",
 		"ProtectedTextCanBeRead",
 		"ExistingTunnelTokenUsable",
 		"agentdock.cloudflare.tunnel.v1",
 		"TokenRecoveryRequired",
-		"WizardSilent",
-		"silent Setup will report the missing or unreadable Tunnel Token through the installer result",
+		"ConnectionPage",
+		"FixedTunnelPage",
+		"cloudflared-token.dpapi",
+		"Source: \"{#OfflinePayloadDir}\\cloudflared.exe\"",
+		"-OfflineCloudflaredBinary ",
 	} {
-		if !strings.Contains(setup, want) {
-			t.Fatalf("Windows Setup missing tunnel credential recovery contract %q", want)
+		if strings.Contains(setup, forbidden) {
+			t.Fatalf("Windows Setup must not own Cloudflare component/credential state %q", forbidden)
 		}
-	}
-	if strings.Contains(setup, "not FileExists(AddBackslash(ExistingInstallRoot()) + 'cloudflared-token.dpapi')") {
-		t.Fatal("Windows Setup must validate the saved Tunnel Token instead of trusting file existence")
 	}
 
 	install := string(installData)
-	guard := strings.Index(install, "if ($InstallChannel -eq 'setup' -and $resolvedTunnelMode -eq 'named')")
-	contextCheck := strings.Index(install, "$interactiveUser = Get-InteractiveDesktopUser")
-	preflight := strings.Index(install, "$setupTunnelTokenState = Resolve-AvailableTunnelToken")
-	payloadMutation := strings.Index(install, "New-Item -ItemType Directory -Path $tempRoot -Force")
-	prompt := strings.Index(install, "Read-Host 'Cloudflare Tunnel Token' -AsSecureString")
-	if guard < 0 || prompt < 0 || guard > prompt {
-		t.Fatal("install.ps1 must reject a missing/unreadable Setup Tunnel Token before the interactive Read-Host fallback")
-	}
-	if preflight < 0 || payloadMutation < 0 || preflight > payloadMutation {
-		t.Fatal("install.ps1 must validate the Setup Tunnel Token before payload extraction or runtime mutation")
-	}
-	if contextCheck < 0 || contextCheck > preflight {
-		t.Fatal("install.ps1 must validate the signed-in user context before attempting current-user DPAPI recovery")
-	}
-	if strings.Count(install, "Resolve-AvailableTunnelToken") < 3 {
-		t.Fatal("install.ps1 must reuse one Tunnel Token resolution path for Setup preflight and final persistence")
-	}
-	if !strings.Contains(install, "$installErrorCode = 'tunnel-token-required'") {
-		t.Fatal("install.ps1 must report the tunnel-token-required structured error")
-	}
-
-	probe := string(probeData)
-	for _, want := range []string{
-		"ProtectedData]::Unprotect",
-		"DataProtectionScope]::CurrentUser",
-		"exit 0",
-		"exit 3",
+	for _, forbidden := range []string{
+		"Resolve-AvailableTunnelToken",
+		"$setupTunnelTokenState",
+		"Read-Host 'Cloudflare Tunnel Token' -AsSecureString",
 	} {
-		if !strings.Contains(probe, want) {
-			t.Fatalf("probe-protected-text.ps1 missing %q", want)
+		if strings.Contains(install, forbidden) {
+			t.Fatalf("base install must not perform Setup-owned Cloudflare credential recovery %q", forbidden)
 		}
+	}
+	for _, want := range []string{
+		"$legacyTunnelCompatibilityRequested",
+		"component', '__import-legacy', 'cloudflared'",
+		"component', 'install', 'cloudflared'",
+		"tunnel', 'configure'",
+	} {
+		if !strings.Contains(install, want) {
+			t.Fatalf("install.ps1 must keep the post-commit legacy Cloudflare adapter %q", want)
+		}
+	}
+	commit := strings.Index(install, "$engineCommitted = $true")
+	compat := strings.Index(install, "if ($legacyTunnelCompatibilityRequested -and -not [string]::IsNullOrWhiteSpace($resolvedTunnelMode))")
+	if commit < 0 || compat < 0 || commit > compat {
+		t.Fatal("legacy Cloudflare compatibility must run only after the base Installer transaction commits")
 	}
 }
 
@@ -834,7 +888,7 @@ func TestWindowsSetupOwnsCoreActivationAndReadsStructuredFailure(t *testing.T) {
 	}
 	install := strings.ReplaceAll(string(installData), "\r\n", "\n")
 	for _, want := range []string{
-		"if ((-not $RegisterStartup) -or ($InstallChannel -eq 'setup')) {",
+		"if ((-not $coreStartupEnabled) -or ($InstallChannel -eq 'setup')) {",
 		"$engineOwnsActivation = $InstallChannel -ne 'setup'",
 		"$commitArgs += '--healthy'",
 		"function Get-InstallerEngineFailureMessage",
@@ -960,9 +1014,7 @@ func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 		"$setupRuntimeLauncherPath = Join-Path $PSScriptRoot 'launch-windows-process.ps1'",
 		"function Invoke-SetupRuntimeProcess",
 		"-Arguments \"service start --runtime-root",
-		"$tunnelStartupArguments = \"--start-tunnel --runtime-root",
-		"-FilePath $destinationTrayBinary",
-		"-Arguments $tunnelStartupArguments",
+		"-FilePath $destinationBinary",
 		"Invoke-SetupRuntimeProcess -FilePath $BinaryPath -Arguments '--background'",
 		"Invoke-SetupRuntimeProcess -FilePath (Join-Path $PSHOME 'powershell.exe') -Arguments $arguments",
 		"-HiddenHostBinary $destinationTrayBinary",
@@ -978,6 +1030,8 @@ func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 		"-LogonType Interactive",
 		"-RunLevel Limited",
 		"Register-ScheduledTask",
+		"$initialLastRunTime = (Get-ScheduledTaskInfo",
+		"$task.State -eq 'Running' -or $info.LastRunTime -ne $initialLastRunTime",
 		"& $AgentDockBinary service task-start",
 		"--task-name $taskName",
 		"--expected-user-sid $identity.User.Value",
@@ -996,6 +1050,8 @@ func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 		"Task Scheduler result: $rawResult",
 		"Read-RuntimeDiagnosticTail",
 		"Remove-Item -LiteralPath $diagnosticRoot -Recurse -Force",
+		"Stop-ScheduledTask -TaskName $taskName",
+		"$launchSucceeded = $true",
 		"Unregister-ScheduledTask",
 		"AGENTDOCK_HOME",
 		"AGENTDOCK_DEFAULT_DIR",
@@ -1007,9 +1063,14 @@ func TestWindowsSetupLaunchesRuntimeOutsideRedirectionGuardTree(t *testing.T) {
 	if !strings.Contains(brokerScript, "finally {") || !strings.Contains(brokerScript, "Unregister-ScheduledTask") {
 		t.Fatal("runtime launch broker must remove its temporary task even when launch fails")
 	}
-	for _, forbidden := range []string{"-Execute $powerShellPath", "-EncodedCommand $encodedCommand"} {
+	for _, forbidden := range []string{
+		"-Execute $powerShellPath",
+		"-EncodedCommand $encodedCommand",
+		"$startedAt = Get-Date",
+		"Get-CimInstance Win32_Process",
+	} {
 		if strings.Contains(brokerScript, forbidden) {
-			t.Fatalf("runtime launch broker must not use a console-subsystem PowerShell task action: %q", forbidden)
+			t.Fatalf("runtime launch broker contains forbidden legacy launch behavior: %q", forbidden)
 		}
 	}
 
@@ -1088,11 +1149,13 @@ func TestWindowsNamedTunnelLifecycleCoversSoftFailureRecovery(t *testing.T) {
 
 	lifecycle := strings.ReplaceAll(string(lifecycleData), "\r\n", "\n")
 	for _, want := range []string{
-		"-TunnelTokenFile $stableTokenFile",
+		"Install-FakeCloudflaredComponent",
+		"component status cloudflared --runtime-root $runtimeDir --json",
+		"--token-file $stableTokenFile",
 		"Invoke-Installer -Archive $sourcePayload.Archive -Checksum $sourcePayload.Checksum",
 		"Invoke-Installer -Archive $TargetAgentDockArchive -Checksum $TargetAgentDockChecksumFile",
-		"-Archive $trialPayload.Archive",
-		"-TunnelTokenFile $invalidTokenFile",
+		"Invoke-Installer -Archive $trialPayload.Archive -Checksum $trialPayload.Checksum",
+		"--token-file $invalidTokenFile",
 		"Invalid Named Token must not roll back a healthy Core generation",
 		"Wait-TextFileContains",
 		"Get-Content -LiteralPath $Path -Raw -ErrorAction Stop",
@@ -1105,6 +1168,12 @@ func TestWindowsNamedTunnelLifecycleCoversSoftFailureRecovery(t *testing.T) {
 		if !strings.Contains(lifecycle, want) {
 			t.Fatalf("Named Tunnel lifecycle test must cover install/repair/update/soft-failure recovery; missing %q", want)
 		}
+	}
+	if strings.Contains(lifecycle, "OfflineCloudflaredBinary") {
+		t.Fatal("Named Tunnel lifecycle must provision its fake dependency through the component store, not the installer")
+	}
+	if strings.Contains(lifecycle, "Version = 'latest'") {
+		t.Fatal("Named Tunnel lifecycle must not pass the removed installer Version parameter through splatting")
 	}
 
 	fake := strings.ReplaceAll(string(fakeData), "\r\n", "\n")
@@ -1165,6 +1234,11 @@ func TestWindowsStandardUserE2EWaitsForDirectProcessWithTimeout(t *testing.T) {
 	}
 	if strings.Contains(launcher, "-Wait `\n        -PassThru") {
 		t.Fatal("Windows standard-user E2E must not use Start-Process -Wait because installer descendants are long-lived")
+	}
+	for label, content := range map[string]string{"launcher": launcher, "child": child} {
+		if strings.Contains(content, "$Version") {
+			t.Fatalf("Windows standard-user E2E %s must not reintroduce public historical-version selection", label)
+		}
 	}
 	for _, want := range []string{
 		"[string] $CompletionFile = ''",
@@ -1241,7 +1315,8 @@ func TestWindowsReleaseKeepsPublishedUpdaterCompatibilityAsset(t *testing.T) {
 	releaseWorkflow := strings.ReplaceAll(string(releaseData), "\r\n", "\n")
 	for _, want := range []string{
 		"Copy-Item .\\packaging\\windows\\compat\\manage-windows.ps1 dist\\manage-windows.ps1 -Force",
-		"dist\\manage-windows.ps1, dist\\share, dist\\wsl-helper",
+		"Copy-Item .\\dist\\agentdock-tray.exe .\\dist\\control-panel\\agentdock-tray.exe -Force",
+		"dist\\manage-windows.ps1, dist\\control-panel, dist\\share, dist\\wsl-helper",
 	} {
 		if !strings.Contains(releaseWorkflow, want) {
 			t.Fatalf("formal Windows Release must preserve the v0.8.2/v0.8.3 updater contract; missing %q", want)
@@ -1256,6 +1331,8 @@ func TestWindowsReleaseKeepsPublishedUpdaterCompatibilityAsset(t *testing.T) {
 	for _, want := range []string{
 		"test-windows-release-backcompat.ps1 -ArchivePath $archivePath",
 		"test-windows-legacy-online-migration.ps1",
+		".\\dist\\control-panel",
+		"Join-Path $SourceDirectory 'control-panel'",
 		"fetch-depth: 0",
 	} {
 		if !strings.Contains(installerWorkflow, want) {

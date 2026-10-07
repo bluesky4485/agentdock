@@ -10,8 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/uvwt/agentdock/internal/buildinfo"
 )
 
 func main() {
@@ -23,20 +21,75 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("用法：release <catalog|version|verify-version|verify-dist|checksum|mirror-prepare|mirror-manifest> [参数]")
+		return errors.New("用法：release <catalog|version|component-version|component-catalog|release-metadata|release-kind|retention-plan|core-version|verify-dist|prepare-github-release|checksum|mirror-manifest> [参数]")
 	}
 	switch args[0] {
 	case "version":
-		fmt.Fprintln(stdout, strings.TrimPrefix(buildinfo.Version, "v"))
-		return nil
-	case "verify-version":
 		if len(args) != 2 {
-			return errors.New("用法：release verify-version <tag>")
+			return errors.New("用法：release version <tag>")
 		}
-		tag := strings.TrimPrefix(strings.TrimSpace(args[1]), "v")
-		if tag != strings.TrimPrefix(buildinfo.Version, "v") {
-			return fmt.Errorf("release tag v%s does not match buildinfo.Version %s", tag, buildinfo.Version)
+		metadata, err := releaseMetadataForTag(args[1])
+		if err != nil {
+			return err
 		}
+		fmt.Fprintln(stdout, metadata.Version)
+		return nil
+	case "component-version":
+		if len(args) != 2 {
+			return errors.New("用法：release component-version <agentdock-version>")
+		}
+		entry, err := currentCloudflaredCatalogEntry(args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, entry.Version)
+		return nil
+	case "component-catalog":
+		if len(args) != 1 {
+			return errors.New("用法：release component-catalog")
+		}
+		return writeCloudflaredComponentCatalog(stdout)
+	case "release-metadata":
+		if len(args) != 2 {
+			return errors.New("用法：release release-metadata <tag>")
+		}
+		return writeReleaseMetadata(args[1], stdout)
+	case "release-kind":
+		if len(args) != 2 {
+			return errors.New("用法：release release-kind <tag>")
+		}
+		metadata, err := releaseMetadataForTag(args[1])
+		if err != nil {
+			return err
+		}
+		if metadata.Prerelease {
+			fmt.Fprintln(stdout, "prerelease")
+		} else {
+			fmt.Fprintln(stdout, "stable")
+		}
+		return nil
+	case "retention-plan":
+		if len(args) != 3 {
+			return errors.New("用法：release retention-plan <current-tag> <tags-file>")
+		}
+		contents, err := os.ReadFile(args[2])
+		if err != nil {
+			return fmt.Errorf("读取 R2 release tag 列表失败: %w", err)
+		}
+		plan, err := buildR2RetentionPlan(args[1], strings.Fields(string(contents)))
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(plan)
+	case "core-version":
+		if len(args) != 2 {
+			return errors.New("用法：release core-version <version>")
+		}
+		metadata, err := releaseMetadataForTag("v" + strings.TrimPrefix(strings.TrimSpace(args[1]), "v"))
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, metadata.Core)
 		return nil
 	case "catalog":
 		return json.NewEncoder(stdout).Encode(ReleaseCatalog())
@@ -45,6 +98,11 @@ func run(args []string, stdout io.Writer) error {
 			return errors.New("用法：release verify-dist <目录>")
 		}
 		return verifyDist(args[1], stdout)
+	case "prepare-github-release":
+		if len(args) != 3 {
+			return errors.New("用法：release prepare-github-release <dist-dir> <output-dir>")
+		}
+		return prepareGitHubRelease(args[1], args[2], stdout)
 	case "checksum":
 		if len(args) != 2 {
 			return errors.New("用法：release checksum <文件>")
@@ -60,11 +118,6 @@ func run(args []string, stdout io.Writer) error {
 			return errors.New("用法：release mirror-manifest <tag> <public-base-url> <dist-dir>")
 		}
 		return writeMirrorManifest(args[1], args[2], args[3], stdout)
-	case "mirror-prepare":
-		if len(args) != 3 {
-			return errors.New("用法：release mirror-prepare <public-base-url> <dist-dir>")
-		}
-		return prepareMirrorBootstrap(args[1], args[2])
 	default:
 		return fmt.Errorf("未知命令：%s", args[0])
 	}

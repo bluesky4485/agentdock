@@ -16,6 +16,7 @@ type Artifact struct {
 	Arch           string `json:"arch,omitempty"`
 	Required       bool   `json:"required"`
 	PublicContract bool   `json:"public_contract"`
+	GitHubRelease  bool   `json:"github_release"`
 }
 
 func verifyDist(dir string, stdout io.Writer) error {
@@ -53,16 +54,21 @@ func verifyDist(dir string, stdout io.Writer) error {
 
 func ReleaseCatalog() []Artifact {
 	archives := []Artifact{
-		{Name: "agentdock_linux_amd64.tar.gz", Kind: "binary-archive", Platform: "linux", Arch: "amd64", Required: true},
-		{Name: "agentdock_linux_arm64.tar.gz", Kind: "binary-archive", Platform: "linux", Arch: "arm64", Required: true},
+		{Name: "agentdock_linux_amd64.tar.gz", Kind: "binary-archive", Platform: "linux", Arch: "amd64", Required: true, GitHubRelease: true},
+		{Name: "agentdock_linux_arm64.tar.gz", Kind: "binary-archive", Platform: "linux", Arch: "arm64", Required: true, GitHubRelease: true},
 		{Name: "agentdock_darwin_amd64.tar.gz", Kind: "binary-archive", Platform: "darwin", Arch: "amd64", Required: true},
 		{Name: "agentdock_darwin_arm64.tar.gz", Kind: "binary-archive", Platform: "darwin", Arch: "arm64", Required: true},
 		{Name: "agentdock_windows_amd64.zip", Kind: "binary-archive", Platform: "windows", Arch: "amd64", Required: true},
 		{Name: "agentdock_windows_arm64.zip", Kind: "binary-archive", Platform: "windows", Arch: "arm64", Required: true},
-		{Name: "AgentDock-macos-universal.dmg", Kind: "disk-image", Platform: "darwin", Arch: "universal", Required: true},
+		{Name: "AgentDock-macos-universal.dmg", Kind: "disk-image", Platform: "darwin", Arch: "universal", Required: true, GitHubRelease: true},
 		{Name: "AgentDock-macos-universal.zip", Kind: "desktop-archive", Platform: "darwin", Arch: "universal", Required: true},
-		{Name: "AgentDockSetup-amd64.exe", Kind: "setup", Platform: "windows", Arch: "amd64", Required: true, PublicContract: true},
-		{Name: "AgentDockSetup-arm64.exe", Kind: "setup", Platform: "windows", Arch: "arm64", Required: true, PublicContract: true},
+		{Name: "AgentDockSetup-amd64.exe", Kind: "setup", Platform: "windows", Arch: "amd64", Required: true, PublicContract: true, GitHubRelease: true},
+		{Name: "AgentDockSetup-arm64.exe", Kind: "setup", Platform: "windows", Arch: "arm64", Required: true, PublicContract: true, GitHubRelease: true},
+	}
+	components := []Artifact{
+		// 第三方 cloudflared 由客户端直接从 Cloudflare 固定 Release 获取；
+		// AgentDock Release/R2 只发布第一方 catalog metadata。
+		{Name: "agentdock-component-catalog.json", Kind: "component-catalog", Required: true},
 	}
 	scripts := []Artifact{
 		{Name: "install.sh", Kind: "bootstrap", Platform: "unix", PublicContract: true, Required: true},
@@ -71,6 +77,16 @@ func ReleaseCatalog() []Artifact {
 	var catalog []Artifact
 	catalog = append(catalog, archives...)
 	for _, artifact := range archives {
+		catalog = append(catalog, Artifact{
+			Name:     artifact.Name + ".sha256",
+			Kind:     "checksum",
+			Platform: artifact.Platform,
+			Arch:     artifact.Arch,
+			Required: artifact.Required,
+		})
+	}
+	catalog = append(catalog, components...)
+	for _, artifact := range components {
 		catalog = append(catalog, Artifact{
 			Name:     artifact.Name + ".sha256",
 			Kind:     "checksum",
