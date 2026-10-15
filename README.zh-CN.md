@@ -2,7 +2,7 @@
 
 [English](./README.md) | 简体中文
 
-<img src="./docs/assets/agentdock-logo.png" alt="AgentDock logo" width="128" />
+<img src="./packaging/assets/agentdock.png" alt="AgentDock logo" width="128" />
 
 # AgentDock MCP
 
@@ -26,19 +26,15 @@
   <img
     src="./docs/assets/agentdock-multi-device.png"
     alt="AgentDock：通过一个 AI 对话统一操控多台设备"
-    width="100%"
+    width="800"
   />
 </p>
 
 ## AgentDock 是什么
 
-AgentDock 是一个面向 AI Agent 的独立工具运行层。
+AgentDock 是连接 AI 助手与真实设备的桥梁，让 AI 在你的电脑和服务器上执行任务。
 
 它为本地电脑、远程服务器与容器环境提供统一、安全、可控的文件、命令、Git、Skill、MCP、浏览器自动化和任务执行能力。配置多台 AgentDock，还能跨设备协同，把原本要在多机之间来回切换的工作，收敛到一次对话里完成。
-
-AgentDock 不提供聊天界面，也不负责模型推理。它专注于解决一件事：
-
-> 让 AI Agent 在明确的权限边界内操作真实环境，并返回结构化、可追踪、可验证的执行结果。
 
 ```text
               ChatGPT / Claude / Codex
@@ -60,12 +56,9 @@ AgentDock 不提供聊天界面，也不负责模型推理。它专注于解决�
 - 用网页版 ChatGPT 直接管理多台电脑与服务器，无需分别 SSH 登录来回操作
 - 在真实设备上写代码、改项目、跑测试并操作 Git，执行发生在本机或服务器，不依赖专用编程 Agent 额度
 - 让 AI 管理 VPS、Docker 服务、反向代理和部署配置
-- 让 AI 检查日志、进程、端口和真实运行状态
 - 让 AI 操作登录后的网页与 macOS 桌面应用
-- 配置多台 AgentDock，在一次对话中完成跨设备协同任务
 - 通过 Skill 和动态 MCP 扩展外部能力
 - 保存长时间任务的执行状态，并在中断后继续
-- 用同一套工具模型连接 macOS、Linux、Windows 与容器环境
 - 等等
 
 
@@ -85,17 +78,17 @@ AgentDock 不提供聊天界面，也不负责模型推理。它专注于解决�
 | Windows | [Windows 图形安装程序](https://uvwt.github.io/agentdock-docs/zh-CN/docs/getting-started/windows) |
 
 
-### 连接方式如何选择
+### 连接设备
 
-- **仅本机**：客户端和 AgentDock 在同一台电脑上。
-- **临时公网地址**：没有域名，但需要从 ChatGPT、手机或其他设备连接。地址可能在 Tunnel 重启后变化。
-- **固定域名**：长期使用稳定公网地址，需要已接入 Cloudflare 的域名和 Tunnel Token。
+macOS 和 Windows 用户可在控制面板的**连接**页配对到官方远程服务：前往 [NexusDock 设备页](https://mcp.nexusdock.co/workspace/devices)获取配对码，输入后点击**连接**。也可以选择自托管服务。
 
-安装完成后，从控制面板或终端取得 MCP 地址，以及 Bearer Token 或 OAuth 登录信息，再填入客户端的 MCP、Tools 或 Connectors 设置。公网访问必须保留认证，不要把凭据放进截图、Issue 或公开聊天。
+需要本地 MCP 或公网直连时，进入**设置 → 高级连接**，也可从连接页的**高级连接设置**入口进入。在这里查看本地 MCP 地址和访问凭据，并配置 Cloudflare 临时公网地址或固定域名。Linux 和 Docker 用户按安装文档配置连接。
 
-## 接入 AI 客户端
+## MCP 直连
 
-AgentDock 通过 MCP Streamable HTTP 提供工具能力。下面是一个通用配置示例，具体字段格式取决于所使用的 AI 客户端：
+选择直连时，将 MCP 地址及 Bearer Token 或 OAuth 登录信息填入客户端的 MCP、Tools 或 Connectors 设置。公网访问必须保留认证，不要把凭据放进截图、Issue 或公开聊天。
+
+AgentDock 使用 MCP Streamable HTTP。下面是本地连接的通用配置示例，具体字段格式取决于所使用的 AI 客户端：
 
 ```json
 {
@@ -113,63 +106,14 @@ AgentDock 通过 MCP Streamable HTTP 提供工具能力。下面是一个通用�
 
 ## 核心能力
 
-### 文件与命令
+- **文件与命令**：在设备上读写文件、搜索代码、执行命令。
+- **多设备管理**：连接本机、服务器和容器，跨设备完成任务；可搭配 NexusDock 统一接入并保存项目记忆。
+- **浏览器与桌面**：操作网页、复用登录状态、截图，以及控制 macOS 桌面应用。
+- **能力扩展**：通过 Skills 和 MCP 接入更多工具，官方与社区 Skills 见 [agentdock-skills](https://github.com/uvwt/agentdock-skills)。
+- **编程助手**：连接 Codex、Claude 等受支持的编程助手，在设备上开发项目。
+- **任务恢复**：保存进度和检查点，让长时间任务在中断后继续执行。
 
-- UTF-8 文本读取、搜索、目录遍历和结构化修改
-- 原子文件写入、路径边界和私密目录保护
-- 有超时和输出边界的命令执行
-- 标准输出、标准错误和退出码分离
-- 长时间命令会话、PTY、会话观察、输入和停止
-- 输出截断和敏感信息脱敏
-- macOS、Linux、Windows 与 WSL 支持
-
-### Skill 与动态 MCP
-
-官方与社区 Skill 源码统一维护在 [uvwt/agentdock-skills](https://github.com/uvwt/agentdock-skills)。本仓库只保留必须随 AgentDock 运行时发布的核心 Skill，包括自举/安全相关 Skill，以及内置的 `agentdock-user-guide` 官方用户指南。
-
-- 以 content digest 驱动 managed Skill 当前内容的安装、更新、移除、重复安装 no-op 与原子替换
-- 通过宿主签发的 `skill_ref` 区分 managed、shared、workspace 等同名来源
-- managed Skill 的环境变量和持久数据与包内容隔离
-- 动态 MCP Server 注册、启停、刷新和移除
-- Streamable HTTP 与 stdio 传输
-- 工具搜索、Schema 检查和受控调用
-- MCP Server 之间的配置隔离
-
-### 原生 ACP 
-
-AgentDock 可以选择作为 ACP Client 原生托管本地 Coding Agent adapter。
-
-- 桌面控制面板提供 Codex、Claude、Grok、OpenCode、AtomCode 和 Kimi Code 预设；是否启用 ACP 以及选择哪个 adapter 由宿主配置决定。
-- 使用 `acp_session` 创建和管理会话，使用 `acp_prompt` 发起并观察 prompt，使用 `acp_interaction` 响应 Agent 的权限请求。
-- 可选 ACP 操作只会在已连接 adapter 声明相应能力时开放。
-- ACP 工作目录遵循宿主进程或容器的安全边界，而不是 AgentDock 文件系统 allowlist。
-
-### 浏览器与桌面自动化
-
-- 浏览器会话启动、关闭和清理
-- 页面跳转、点击、输入、选择和等待
-- 页面文本、可交互元素、错误和网络响应检查
-- 登录状态、持久化浏览器 Profile 和截图
-- macOS 系统 Chrome 与桌面自动化支持
-
-### 可恢复任务
-
-- 持久化任务状态
-- 明确的目标、步骤和完成条件
-- 分阶段检查点
-- 阻塞原因记录和中断恢复
-- 最终审查与完成验证
-- 可复用工作流模板
-
-### Recall 与 NexusDock 集成
-
-AgentDock 可以选择与 NexusDock 配对，将它作为多设备汇总入口：
-
-- 长期项目记忆
-- 运行手册和经验记录
-- 工作流模板
-- 私密笔记
-- 多设备状态协同
+配置与使用详情见[在线文档](https://docs.nexusdock.co/agentdock/)。
 
 ## 运行目录
 
@@ -178,48 +122,21 @@ AgentDock 可以选择与 NexusDock 配对，将它作为多设备汇总入口�
 | `~/AgentDock` | 相对文件操作的默认工作目录 |
 | `~/.agentdock` | AgentDock 状态、配置、会话和扩展数据 |
 
-## 端口说明
+## 感谢赞助商
 
-Docker、原生安装和本地开发的默认 MCP 地址：
+| <div align="center"><strong>🏆&nbsp;赞助商&nbsp;🏆</strong></div> | <div align="center"><strong>介绍</strong></div> |
+| :------------- | :------ |
+| <a href="https://www.swiftproxy.net/?ref=agentdock"><img src="./docs/assets/sponsors/swiftproxy-logo.png" width="180" alt="Swiftproxy"></a> | <br>[**Swiftproxy**](https://www.swiftproxy.net/?ref=agentdock)<br>提供高质量动态和静态住宅代理，拥有 9000 万+住宅 IP，覆盖全球 220+ 个地区，支持 HTTP(S)、SOCKS5、IP 轮换与粘性会话，为 AI Agent、浏览器自动化和网页数据采集提供灵活的代理支持。动态住宅代理低至 $0.7/GB，使用优惠码 <code>PROXY90</code> 享受九折优惠。 |
 
-`http://127.0.0.1:8765/mcp`
-
-端口可以通过配置调整，客户端应以实际部署配置为准。
-
-公网部署必须启用 Bearer Token 或 OAuth 认证并使用 HTTPS，不要将未认证的 MCP 服务暴露到公网。
-
-## 开发与贡献
-
-提交代码前运行完整检查：
-
-```bash
-make check
-```
-
-项目使用 GitHub Actions 持续执行测试、静态检查、构建和发布验证。
-
-用户文档独立维护在 [`uvwt/agentdock-docs`](https://github.com/uvwt/agentdock-docs)。修改用户可见行为、配置参数、安装方式或工具 Schema 时，应同步更新对应文档。
-
-涉及设备配对、跨节点工具路由、Recall 或 Workflow 等集成能力时，可能还需协同修改独立仓库 [`uvwt/nexusdock`](https://github.com/uvwt/nexusdock)。两者共享的协议维护在 [`uvwt/agentdock-protocol`](https://github.com/uvwt/agentdock-protocol)。变更共享接口或数据结构时，应先更新协议定义，再同步两端实现与协议依赖版本，核对兼容性并更新对应文档，在 PR 中关联跨仓库改动。
-
-提交问题或功能建议请使用 [GitHub Issues](https://github.com/uvwt/agentdock/issues)。
+想支持项目或展示品牌？[联系维护者](mailto:t80980@gmail.com)。
 
 ## 支持项目
 
 <p>如果 <b>AgentDock</b> 对您有帮助，请考虑为它点个 <b>Star</b> ⭐，感谢您的支持</p>
-<table>
-<thead>
-<tr>
-<th align="center">微信(WeChat)</th>
-<th align="center">支付宝(Alipay)</th>
-</tr>
-</thead>
-<tbody><tr>
-<td align="center"><img src="./docs/assets/donation/wechat-cropped.JPG" alt="微信赞助二维码" height="200"></td>
-<td align="center"><img src="./docs/assets/donation/alipay.JPG" alt="支付宝赞助二维码" height="200"></td>
-</tr>
-</tbody>
-</table>
+
+| 微信赞赏 | 支付宝 | Buy Me a Coffee |
+| :---: | :---: | :---: |
+| <a href="./docs/assets/donation/wechat-qr.png"><img src="./docs/assets/donation/wechat-qr.png" alt="微信赞赏" width="140" height="140"></a> | <a href="./docs/assets/donation/alipay-qr.png"><img src="./docs/assets/donation/alipay-qr.png" alt="支付宝" width="140" height="140"></a> | <a href="https://buymeacoffee.com/uvwt"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee" width="180"></a> |
 
 ## Star 趋势
 
@@ -228,10 +145,7 @@ make check
 ## 相关链接
 
 - [Documentation](https://docs.nexusdock.co/agentdock/)
-- [Documentation source](https://github.com/uvwt/agentdock-docs)
 - [GitHub Releases](https://github.com/uvwt/agentdock/releases)
-- [GitHub Container Registry](https://github.com/uvwt/agentdock/pkgs/container/agentdock)
-- [Docker Hub](https://hub.docker.com/r/agentdockio/agentdock)
 - [Linux Do](https://linux.do/)
 
 ## License

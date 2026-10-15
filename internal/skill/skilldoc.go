@@ -114,9 +114,6 @@ func ValidatePackage(packageDir string) error {
 				return packageError(ErrInvalidPackage, "package.file_type", errors.New("special files are not allowed in Skill packages"))
 			}
 		}
-		if !entry.IsDir() && entry.Name() == ".env" {
-			return packageError(ErrInvalidPackage, "package.secret_file", errors.New(".env files are not allowed in Skill packages; store credentials in the managed Skill environment"))
-		}
 		if !entry.IsDir() && entry.Name() == ".agentdock-install.json" {
 			return packageError(ErrInvalidPackage, "package.reserved_file", errors.New(".agentdock-install.json is reserved legacy AgentDock metadata and is not valid Skill package content"))
 		}

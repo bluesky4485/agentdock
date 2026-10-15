@@ -40,7 +40,7 @@ func desktopUpdateVersion(appPath string) string {
 	if strings.TrimSpace(appPath) == "" {
 		return ""
 	}
-	version, err := plistValue(context.Background(), filepath.Join(appPath, "Contents", "Info.plist"), "CFBundleShortVersionString")
+	version, err := macOSDesktopReleaseVersion(context.Background(), appPath)
 	if err != nil {
 		return ""
 	}
@@ -49,6 +49,16 @@ func desktopUpdateVersion(appPath string) string {
 		return ""
 	}
 	return normalized
+}
+
+// 系统要求 CFBundleShortVersionString 保持数字营销版本，预发布后缀必须取自
+// AgentDockReleaseVersion。旧版 App 没有该字段时才回退系统短版本。
+func macOSDesktopReleaseVersion(ctx context.Context, appPath string) (string, error) {
+	plistPath := filepath.Join(appPath, "Contents", "Info.plist")
+	if version, err := plistValue(ctx, plistPath, "AgentDockReleaseVersion"); err == nil {
+		return version, nil
+	}
+	return plistValue(ctx, plistPath, "CFBundleShortVersionString")
 }
 
 func desktopUpdateOwnsExecutable(appPath, executable string) bool {
@@ -181,7 +191,7 @@ func validateMacOSDesktopVersion(ctx context.Context, appPath, targetVersion str
 	if err := validateMacOSDesktopTarget(appPath); err != nil {
 		return err
 	}
-	version, err := plistValue(ctx, filepath.Join(appPath, "Contents", "Info.plist"), "CFBundleShortVersionString")
+	version, err := macOSDesktopReleaseVersion(ctx, appPath)
 	if err != nil {
 		return fmt.Errorf("读取 macOS App 版本失败: %w", err)
 	}

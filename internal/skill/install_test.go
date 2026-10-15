@@ -16,6 +16,47 @@ import (
 	skillstate "github.com/uvwt/agentdock/internal/skill/state"
 )
 
+func TestValidateMacOSZIPWithOneSkillFolder(t *testing.T) {
+	manager := newManagerForTest(t)
+	archivePath := filepath.Join(t.TempDir(), "macos-skill.zip")
+	archive, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(archive)
+	for name, body := range map[string]string{
+		"personal-dev-guard/SKILL.md":              "---\nname: personal-dev-guard\ndescription: Portable instructions\n---\n# Skill\n",
+		"personal-dev-guard/SKILL.md.bak-20260830": "old backup",
+		"__MACOSX/._personal-dev-guard":            "metadata",
+		"__MACOSX/personal-dev-guard/._SKILL.md":   "metadata",
+	} {
+		file, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(file, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := manager.Validate(context.Background(), ValidateRequest{Source: archivePath})
+	if err != nil || !preview.Valid || preview.Document.Name != "personal-dev-guard" {
+		t.Fatalf("Skill ZIP review failed: preview=%#v err=%v", preview, err)
+	}
+	installed, err := manager.Install(context.Background(), InstallRequest{Source: archivePath})
+	if err != nil || !installed.Changed {
+		t.Fatalf("Skill ZIP install failed: result=%#v err=%v", installed, err)
+	}
+	if _, err := os.Stat(filepath.Join(installed.Path, "__MACOSX")); !os.IsNotExist(err) {
+		t.Fatalf("macOS metadata was installed: %v", err)
+	}
+}
+
 func TestInstallVersionlessSkillAsSingleCurrentContent(t *testing.T) {
 	manager := newManagerForTest(t)
 	source := writeSkillSource(t, "demo-skill", "First", nil)
@@ -101,7 +142,7 @@ func TestInstallInvalidCandidateLeavesCurrentContentUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	invalid := writeSkillSource(t, "demo-skill", "Invalid", map[string]string{".env": "SECRET=value\n"})
+	invalid := writeSkillSource(t, "demo-skill", "Invalid", map[string]string{"agentdock.yaml": "legacy\n"})
 	if _, err := manager.Install(context.Background(), InstallRequest{Source: invalid}); err == nil {
 		t.Fatal("invalid update succeeded")
 	}
@@ -118,11 +159,10 @@ func TestInstallInvalidCandidateLeavesCurrentContentUnchanged(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsLegacyManifestAndPrivateEnv(t *testing.T) {
+func TestValidateRejectsReservedManifests(t *testing.T) {
 	manager := newManagerForTest(t)
 	for name, extra := range map[string]map[string]string{
 		"legacy manifest": {"agentdock.yaml": "legacy\n"},
-		"private env":     {".env": "SECRET=value\n"},
 		"legacy receipt":  {".agentdock-install.json": "{}\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -135,6 +175,19 @@ func TestValidateRejectsLegacyManifestAndPrivateEnv(t *testing.T) {
 				t.Fatalf("invalid package passed validation: %#v", result)
 			}
 		})
+	}
+}
+
+func TestInstallPreservesEnvironmentFile(t *testing.T) {
+	manager := newManagerForTest(t)
+	source := writeSkillSource(t, "demo-skill", "Demo", map[string]string{".env": "SECRET=fixture-value\n"})
+	result, err := manager.Install(context.Background(), InstallRequest{Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := os.ReadFile(filepath.Join(result.Path, ".env"))
+	if err != nil || string(actual) != "SECRET=fixture-value\n" {
+		t.Fatalf("installed environment file does not match: %q %v", actual, err)
 	}
 }
 

@@ -516,7 +516,7 @@ func activateWindows(ctx context.Context, request Request, staged stagedInstall)
 			if !fileExists(file.source) {
 				return activatedInstall{}, fmt.Errorf("payload 缺少 %s", filepath.Base(file.source))
 			}
-			if err := copyTree(file.source, file.target, file.mode); err != nil {
+			if err := copyWindowsStableFile(file.source, file.target, file.mode); err != nil {
 				return activatedInstall{}, err
 			}
 		}

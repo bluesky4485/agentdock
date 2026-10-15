@@ -297,9 +297,6 @@ func validatePackageTree(root string) ([]string, error) {
 		if !info.Mode().IsRegular() {
 			return pluginError("PLUGIN_PACKAGE_INVALID", "package.file_type", fmt.Errorf("special files are not allowed: %s", relative))
 		}
-		if entry.Name() == ".env" {
-			return pluginError("PLUGIN_PACKAGE_INVALID", "package.secret_file", errors.New(".env files are not allowed in Plugin packages"))
-		}
 		return nil
 	})
 	if err != nil {

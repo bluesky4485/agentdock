@@ -106,6 +106,43 @@ func TestMacOSDesktopUpdateInstallsAndRestoresApp(t *testing.T) {
 	assertMacOSAppVersion(t, target, "v0.7.0")
 }
 
+func TestMacOSPrereleaseUsesFullReleaseVersionForUpgrade(t *testing.T) {
+	dir := t.TempDir()
+	installed := writeSignedMacOSApp(t, filepath.Join(dir, "installed"), "1.0.1")
+	staged := writeSignedMacOSApp(t, filepath.Join(dir, "staged"), "1.1.0")
+
+	// macOS 的营销版本必须是数字版，但升级协议应校验完整的 RC 版本。
+	plist := filepath.Join(staged, "Contents", "Info.plist")
+	runTestCommand(t, "/usr/libexec/PlistBuddy", "-c", "Add :AgentDockReleaseVersion string 1.1.0-rc.1", plist)
+	runTestCommand(t, "/usr/bin/codesign", "--force", "--deep", "--sign", "-", "--identifier", "com.uvwt.agentdock", staged)
+
+	if got := desktopUpdateVersion(staged); got != "v1.1.0-rc.1" {
+		t.Fatalf("staged prerelease version = %q, want v1.1.0-rc.1", got)
+	}
+	if got := desktopUpdateVersion(installed); got != "v1.0.1" {
+		t.Fatalf("legacy app version = %q, want v1.0.1", got)
+	}
+	if err := validateMacOSDesktopVersion(context.Background(), staged, "v1.1.0-rc.1"); err != nil {
+		t.Fatalf("published prerelease app must be accepted: %v", err)
+	}
+	if err := validateMacOSDesktopVersion(context.Background(), staged, "v1.1.0-rc.2"); err == nil {
+		t.Fatal("different prerelease must not match merely because marketing version is the same")
+	}
+
+	transaction, err := prepareDesktopUpdate(context.Background(), installed, staged, "v1.1.0-rc.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertMacOSAppVersion(t, installed, "v1.1.0-rc.1")
+	if err := transaction.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertMacOSAppVersion(t, installed, "v1.0.1")
+}
+
 func TestApplyPlatformUpdateRestoresCoreAndAppWhenSkillBootstrapFails(t *testing.T) {
 	dir := t.TempDir()
 	coreTarget := filepath.Join(dir, "bin", "agentdock")

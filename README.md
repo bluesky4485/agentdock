@@ -2,7 +2,7 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-<img src="./docs/assets/agentdock-logo.png" alt="AgentDock logo" width="128" />
+<img src="./packaging/assets/agentdock.png" alt="AgentDock logo" width="128" />
 
 # AgentDock MCP
 
@@ -26,19 +26,15 @@ Open ChatGPT in your browser and manage multiple computers and servers from one 
   <img
     src="./docs/assets/agentdock-multi-device.png"
     alt="AgentDock: operate multiple devices from one AI conversation"
-    width="100%"
+    width="800"
   />
 </p>
 
 ## What is AgentDock?
 
-AgentDock is an independent tool runtime for AI agents.
+AgentDock connects AI assistants to your computers and servers so they can carry out tasks on your devices.
 
 It provides unified, secure, and controlled file, command, Git, Skill, MCP, browser automation, and task execution across local computers, remote servers, and containers. Connect multiple AgentDock instances to coordinate work across devices and finish multi-machine workflows in a single conversation.
-
-AgentDock does not provide a chat interface or perform model inference. It focuses on one responsibility:
-
-> Let AI agents operate real environments within explicit permission boundaries and return structured, traceable, and verifiable results.
 
 ```text
               ChatGPT / Claude / Codex
@@ -60,12 +56,9 @@ AgentDock does not provide a chat interface or perform model inference. It focus
 - Manage multiple computers and servers directly from ChatGPT without repeatedly switching SSH sessions
 - Write code, modify projects, run tests, and operate Git in the real local or remote environment without depending on a dedicated coding-agent quota
 - Manage VPS hosts, Docker services, reverse proxies, and deployment configuration
-- Inspect logs, processes, ports, and actual runtime state
 - Operate authenticated web pages and macOS desktop applications
-- Connect multiple AgentDock instances and coordinate cross-device work in one conversation
 - Extend capabilities through Skills and dynamic MCP servers
 - Persist long-running task state and continue after an interruption
-- Use the same tool model across macOS, Linux, Windows, and containers
 - And more
 
 ## Quick start
@@ -82,17 +75,17 @@ See [Install AgentDock](https://uvwt.github.io/agentdock-docs/docs/getting-start
 | macOS | [macOS installation](https://uvwt.github.io/agentdock-docs/docs/getting-started/macos) |
 | Windows | [Graphical Windows installer](https://uvwt.github.io/agentdock-docs/docs/getting-started/windows) |
 
-### Choose a connection option
+### Connect your device
 
-- **Local only:** the client and AgentDock run on the same computer.
-- **Temporary public address:** ChatGPT, a phone, or another remote device needs access and no domain is ready. The address may change after the Tunnel restarts.
-- **Fixed domain:** a stable address for long-term use. Requires a Cloudflare-managed domain and Tunnel Token.
+On macOS and Windows, open **Connections** in the control panel to pair your device with the official remote service. Get a pairing code from the [NexusDock devices page](https://mcp.nexusdock.co/workspace/devices), enter it, and click **Connect**. You can also choose a self-hosted service.
 
-After installation, get the MCP URL and Bearer Token or OAuth sign-in details from the control panel or terminal, then add them to the MCP, Tools, or Connectors settings in your client. Public access must keep authentication enabled. Do not include credentials in screenshots, issues, or public conversations.
+For local MCP or direct public access, open **Settings → Advanced connection**, or use **Advanced connection settings** on the Connections page. This is where you find the local MCP address, access credentials, and Cloudflare settings for a temporary public address or fixed domain. For Linux and Docker, follow the installation documentation to configure the connection.
 
-## Connect an AI client
+## Direct MCP connection
 
-AgentDock exposes tools over MCP Streamable HTTP. The exact client syntax varies, but a typical configuration looks like this:
+When connecting directly, add the MCP address and Bearer Token or OAuth sign-in details to your client's MCP, Tools, or Connectors settings. Public access must keep authentication enabled. Do not include credentials in screenshots, issues, or public conversations.
+
+AgentDock uses MCP Streamable HTTP. The exact client syntax varies; a typical local configuration looks like this:
 
 ```json
 {
@@ -109,64 +102,14 @@ AgentDock exposes tools over MCP Streamable HTTP. The exact client syntax varies
 
 ## Core capabilities
 
-### Files and commands
+- **Files and commands:** Read and write files, search code, and run commands on your devices.
+- **Multi-device management:** Connect local computers, servers, and containers to complete work across devices. Pair with NexusDock for a shared entrypoint and project memory.
+- **Browser and desktop automation:** Operate web pages, reuse login sessions, take screenshots, and control macOS desktop applications.
+- **Extensions:** Add tools through Skills and MCP servers. Find official and community Skills in [agentdock-skills](https://github.com/uvwt/agentdock-skills).
+- **Coding assistants:** Connect Codex, Claude, and other supported coding assistants to develop projects on your devices.
+- **Task recovery:** Save progress and checkpoints so long-running work can continue after an interruption.
 
-- Read and search UTF-8 text, traverse directories, and apply structured edits
-- Atomic file writes, path boundaries, and private-directory protection
-- Command execution with timeout and output limits
-- Separate stdout, stderr, and exit status
-- Long-running command sessions, PTY, observation, input, and termination
-- Output truncation and sensitive-value redaction
-- macOS, Linux, Windows, and WSL support
-
-### Skills and dynamic MCP
-
-Official and community Skill sources live in [uvwt/agentdock-skills](https://github.com/uvwt/agentdock-skills). This repository only keeps core Skills that must ship with the AgentDock runtime, including bootstrap/security Skills and the built-in `agentdock-user-guide` official user guide.
-
-- Install, update, and remove current managed Skill content with digest-based no-op and atomic replacement
-- Keep managed, shared, and workspace Skill sources distinct through host-issued `skill_ref` provenance
-- Isolate managed Skill environment variables and persistent data from package content
-- Register, enable, disable, refresh, and remove dynamic MCP servers
-- Streamable HTTP and stdio transports
-- Search tools, inspect schemas, and perform controlled calls
-- Configuration isolation between MCP servers
-
-### Native ACP
-
-AgentDock can optionally act as a native ACP client and host a local coding-agent adapter.
-
-- Desktop control panels provide presets for Codex, Claude, Grok, OpenCode, AtomCode, and Kimi Code; host configuration controls whether ACP is enabled and which adapter is selected.
-- Use `acp_session` to create and manage sessions, `acp_prompt` to run and observe prompts, and `acp_interaction` to answer agent permission requests.
-- Optional ACP operations are available only when the connected adapter advertises the corresponding capability.
-- ACP working directories follow the host process or container security boundary rather than an AgentDock filesystem allowlist.
-
-### Browser and desktop automation
-
-- Start, close, and clean up browser sessions
-- Navigate, click, type, select, and wait
-- Inspect page text, interactive elements, errors, and network responses
-- Persist login state, use dedicated browser profiles, and capture screenshots
-- Use system Chrome and macOS desktop automation
-
-### Recoverable tasks
-
-- Persist task state
-- Define explicit goals, steps, and completion conditions
-- Record staged checkpoints
-- Track blockers and resume after interruption
-- Perform final review and evidence-based completion checks
-- Reuse workflow templates
-
-### Recall and NexusDock integration
-
-AgentDock can optionally pair with NexusDock as a multi-device aggregation entrypoint:
-
-- Long-term project memory
-- Runbooks and experience records
-- Workflow templates
-- Private notes
-- Multi-device state coordination
-- Temporary signed Artifact downloads proxied by NexusDock while the source node is online
+See the [documentation](https://docs.nexusdock.co/agentdock/) for configuration and usage details.
 
 ## Runtime directories
 
@@ -175,48 +118,21 @@ AgentDock can optionally pair with NexusDock as a multi-device aggregation entry
 | `~/AgentDock` | Default working directory for relative file operations |
 | `~/.agentdock` | AgentDock state, configuration, sessions, and extension data |
 
-## Ports
+## Thanks to our sponsors
 
-Default MCP URL for Docker, native installs, and local development:
+| <div align="center"><strong>🏆&nbsp;Sponsors&nbsp;🏆</strong></div> | <div align="center"><strong>Description</strong></div> |
+| :------------- | :------ |
+| <a href="https://www.swiftproxy.net/?ref=agentdock"><img src="./docs/assets/sponsors/swiftproxy-logo.png" width="180" alt="Swiftproxy"></a> | <br>[**Swiftproxy**](https://www.swiftproxy.net/?ref=agentdock)<br>Offers rotating and static residential proxies with 90M+ IPs across 220+ locations. Supporting HTTP(S), SOCKS5, and sticky sessions, it provides flexible proxy solutions for AI agents, browser automation, and web data collection. Plans start at $0.7/GB. Use code <code>PROXY90</code> for 10% off. |
 
-`http://127.0.0.1:8765/mcp`
-
-Ports are configurable. Clients must use the address defined by the actual deployment.
-
-For public deployments, enable Bearer Token or OAuth authentication and use HTTPS. Never expose an unauthenticated MCP service to the public internet.
-
-## Development and contribution
-
-Run the full check before submitting code:
-
-```bash
-make check
-```
-
-GitHub Actions continuously run tests, static checks, builds, and release validation.
-
-User documentation is maintained separately in [`uvwt/agentdock-docs`](https://github.com/uvwt/agentdock-docs). Changes to user-visible behavior, configuration, installation, or tool schemas should update the matching documentation in the same change set.
-
-Changes involving device pairing, cross-node tool routing, Recall, or Workflow integrations may also require coordinated changes in [`uvwt/nexusdock`](https://github.com/uvwt/nexusdock). The shared protocol is maintained in [`uvwt/agentdock-protocol`](https://github.com/uvwt/agentdock-protocol). When changing shared interfaces or data structures, update the protocol definitions first, then align both implementations and their protocol dependency versions, check compatibility, update the corresponding documentation, and link related cross-repository changes in the PR.
-
-Submit bugs and feature requests through [GitHub Issues](https://github.com/uvwt/agentdock/issues).
+Want to support the project or showcase your brand? [Contact the maintainer](mailto:t80980@gmail.com).
 
 ## Support the project
 
 <p>If <b>AgentDock</b> helps you, please consider giving it a <b>Star</b> ⭐. Thank you for your support</p>
-<table>
-<thead>
-<tr>
-<th align="center">WeChat</th>
-<th align="center">Alipay</th>
-</tr>
-</thead>
-<tbody><tr>
-<td align="center"><img src="./docs/assets/donation/wechat-cropped.JPG" alt="WeChat donation QR code" height="200"></td>
-<td align="center"><img src="./docs/assets/donation/alipay.JPG" alt="Alipay donation QR code" height="200"></td>
-</tr>
-</tbody>
-</table>
+
+| WeChat | Alipay | Buy Me a Coffee |
+| :---: | :---: | :---: |
+| <a href="./docs/assets/donation/wechat-qr.png"><img src="./docs/assets/donation/wechat-qr.png" alt="WeChat" width="140" height="140"></a> | <a href="./docs/assets/donation/alipay-qr.png"><img src="./docs/assets/donation/alipay-qr.png" alt="Alipay" width="140" height="140"></a> | <a href="https://buymeacoffee.com/uvwt"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee" width="180"></a> |
 
 ## Star History
 
@@ -225,10 +141,7 @@ Submit bugs and feature requests through [GitHub Issues](https://github.com/uvwt
 ## Related links
 
 - [Documentation](https://docs.nexusdock.co/agentdock/)
-- [Documentation source](https://github.com/uvwt/agentdock-docs)
 - [GitHub Releases](https://github.com/uvwt/agentdock/releases)
-- [GitHub Container Registry](https://github.com/uvwt/agentdock/pkgs/container/agentdock)
-- [Docker Hub](https://hub.docker.com/r/agentdockio/agentdock)
 - [Linux Do](https://linux.do/)
 
 ## License
