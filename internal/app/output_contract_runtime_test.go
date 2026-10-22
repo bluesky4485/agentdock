@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/google/jsonschema-go/jsonschema"
 	acpruntime "github.com/uvwt/agentdock/internal/acp"
 	"github.com/uvwt/agentdock/internal/config"
 )
@@ -35,22 +35,16 @@ func assertToolResultMatchestestOutputSchema(t *testing.T, name string, result R
 	if err != nil {
 		t.Fatalf("marshal %s output schema: %v", name, err)
 	}
-	var schema any
+	var schema jsonschema.Schema
 	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
 		t.Fatalf("unmarshal %s output schema: %v", name, err)
 	}
 
-	compiler := jsonschema.NewCompiler()
-	compiler.DefaultDraft(jsonschema.Draft2020)
-	resource := "urn:agentdock:test:output:" + name
-	if err := compiler.AddResource(resource, schema); err != nil {
-		t.Fatalf("load %s output schema: %v", name, err)
-	}
-	compiled, err := compiler.Compile(resource)
+	resolved, err := schema.Resolve(nil)
 	if err != nil {
 		t.Fatalf("compile %s output schema: %v", name, err)
 	}
-	if err := compiled.Validate(normalized); err != nil {
+	if err := resolved.Validate(normalized); err != nil {
 		t.Fatalf("%s result violates output schema: %v\nresult: %s", name, err, encoded)
 	}
 	return normalized

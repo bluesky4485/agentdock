@@ -2,25 +2,21 @@ package contract
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
-	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
-	"github.com/santhosh-tekuri/jsonschema/v6/kind"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
-const inputSchemaResource = "urn:agentdock:tool-input-schema"
+const (
+	draft7HTTP   = "http://json-schema.org/draft-07/schema#"
+	draft7HTTPS  = "https://json-schema.org/draft-07/schema#"
+	draft2020URL = "https://json-schema.org/draft/2020-12/schema"
+)
 
 type InputValidator struct {
-	schema *jsonschema.Schema
-}
-
-type localSchemaLoader struct{}
-
-func (localSchemaLoader) Load(url string) (any, error) {
-	return nil, fmt.Errorf("external schema reference is not allowed: %s", url)
+	resolved *jsonschema.Resolved
 }
 
 func CompileInputSchema(raw map[string]any) (*InputValidator, error) {
@@ -29,6 +25,9 @@ func CompileInputSchema(raw map[string]any) (*InputValidator, error) {
 	}
 	if !schemaRootAllowsObject(raw["type"]) {
 		return nil, fmt.Errorf("inputSchema root must allow object")
+	}
+	if err := validateSchemaDraft(raw); err != nil {
+		return nil, err
 	}
 
 	// Schema 也先归一化到真实 JSON 数据模型。各 capability 为了可读性会使用
@@ -39,26 +38,20 @@ func CompileInputSchema(raw map[string]any) (*InputValidator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode inputSchema: %w", err)
 	}
-	var schemaJSON any
-	if err := json.Unmarshal(encoded, &schemaJSON); err != nil {
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(encoded, &schema); err != nil {
 		return nil, fmt.Errorf("decode inputSchema: %w", err)
 	}
 
-	compiler := jsonschema.NewCompiler()
-	compiler.DefaultDraft(jsonschema.Draft2020)
-	compiler.UseLoader(localSchemaLoader{})
-	if err := compiler.AddResource(inputSchemaResource, schemaJSON); err != nil {
-		return nil, fmt.Errorf("load inputSchema: %w", err)
-	}
-	compiled, err := compiler.Compile(inputSchemaResource)
+	resolved, err := schema.Resolve(nil)
 	if err != nil {
 		return nil, fmt.Errorf("compile inputSchema: %w", err)
 	}
-	return &InputValidator{schema: compiled}, nil
+	return &InputValidator{resolved: resolved}, nil
 }
 
 func (v *InputValidator) Validate(arguments map[string]any) error {
-	if v == nil || v.schema == nil {
+	if v == nil || v.resolved == nil {
 		return fmt.Errorf("input validator is not initialized")
 	}
 	if arguments == nil {
@@ -75,27 +68,115 @@ func (v *InputValidator) Validate(arguments map[string]any) error {
 	if err := json.Unmarshal(raw, &normalized); err != nil {
 		return fmt.Errorf("decode tool arguments: %w", err)
 	}
-	return v.schema.Validate(normalized)
+	return v.resolved.Validate(normalized)
 }
 
+// CompactValidationError 保持模型可见的校验原因简短、稳定。
+// google/jsonschema-go 当前只返回带上下文的字符串错误，没有结构化 instance path。
+// 因此这里只归一化 AgentDock 已经对外使用的 required/type 两类错误；其他错误
+// 保留上游信息并压缩空白，避免为了“漂亮报错”重新实现一套 JSON Schema 校验器。
 func CompactValidationError(err error) string {
-	var validationErr *jsonschema.ValidationError
-	if !errors.As(err, &validationErr) {
-		return strings.Join(strings.Fields(err.Error()), " ")
+	if err == nil {
+		return ""
 	}
-	leaf := firstSchemaErrorLeaf(validationErr)
-	path := schemaInstancePath(leaf.InstanceLocation)
-	switch failure := leaf.ErrorKind.(type) {
-	case *kind.Required:
-		if len(failure.Missing) > 0 {
-			return path + "." + failure.Missing[0] + " is required"
-		}
-	case *kind.Type:
-		if len(failure.Want) > 0 {
-			return path + " must be " + strings.Join(failure.Want, " or ")
+	message := strings.Join(strings.Fields(err.Error()), " ")
+	path := validationInstancePath(message)
+
+	if index := strings.LastIndex(message, "required: missing properties: "); index >= 0 {
+		missing := message[index+len("required: missing properties: "):]
+		if property, ok := firstQuotedString(missing); ok {
+			return path + "." + property + " is required"
 		}
 	}
-	return strings.Join(strings.Fields(leaf.Error()), " ")
+
+	if index := strings.LastIndex(message, "type: "); index >= 0 {
+		failure := message[index:]
+		if wantIndex := strings.LastIndex(failure, ", want "); wantIndex >= 0 {
+			want := strings.TrimPrefix(failure[wantIndex+len(", want "):], "one of ")
+			if types, ok := firstQuotedString(want); ok {
+				return path + " must be " + strings.ReplaceAll(types, ", ", " or ")
+			}
+		}
+	}
+	return message
+}
+
+func validateSchemaDraft(raw map[string]any) error {
+	value, exists := raw["$schema"]
+	if !exists {
+		return nil
+	}
+	draft, ok := value.(string)
+	if !ok {
+		// 交给 json.Unmarshal/Resolve 返回更准确的 schema 类型错误。
+		return nil
+	}
+	switch draft {
+	case "", draft7HTTP, draft7HTTPS, draft2020URL:
+		return nil
+	default:
+		// google/jsonschema-go 只实现 Draft-07 与 2020-12。旧 Draft 不能简单
+		// 改写版本号，否则 items、$ref siblings 等关键语义会被静默解释错误。
+		return fmt.Errorf("inputSchema declares unsupported JSON Schema draft %q; supported drafts are draft-07 and 2020-12", draft)
+	}
+}
+
+func validationInstancePath(message string) string {
+	best := "$"
+	for offset := 0; ; {
+		index := strings.Index(message[offset:], "validating ")
+		if index < 0 {
+			break
+		}
+		start := offset + index + len("validating ")
+		end := strings.Index(message[start:], ": ")
+		if end < 0 {
+			break
+		}
+		candidate := instancePathFromSchemaPath(message[start : start+end])
+		// $ref 会同时留下引用点和被引用 schema 的 validating frame。
+		// 优先保留包含更多 properties 层级的引用点，避免把 $.user 退化成 $。
+		if len(candidate) > len(best) {
+			best = candidate
+		}
+		offset = start + end + 2
+	}
+	return best
+}
+
+func instancePathFromSchemaPath(schemaPath string) string {
+	if schemaPath == "" || schemaPath == "root" || !strings.HasPrefix(schemaPath, "/") {
+		return "$"
+	}
+
+	path := "$"
+	parts := strings.Split(strings.TrimPrefix(schemaPath, "/"), "/")
+	for index := 0; index+1 < len(parts); index++ {
+		if parts[index] != "properties" {
+			continue
+		}
+		property := strings.ReplaceAll(strings.ReplaceAll(parts[index+1], "~1", "/"), "~0", "~")
+		path += "." + property
+		index++
+	}
+	return path
+}
+
+func firstQuotedString(value string) (string, bool) {
+	start := strings.IndexByte(value, '"')
+	if start < 0 {
+		return "", false
+	}
+	for end := start + 1; end < len(value); end++ {
+		if value[end] != '"' {
+			continue
+		}
+		decoded, err := strconv.Unquote(value[start : end+1])
+		if err == nil {
+			return decoded, true
+		}
+	}
+	return "", false
 }
 
 func schemaRootAllowsObject(rawType any) bool {
@@ -173,27 +254,4 @@ func appendNullType(value any) any {
 	default:
 		return value
 	}
-}
-
-func firstSchemaErrorLeaf(err *jsonschema.ValidationError) *jsonschema.ValidationError {
-	for len(err.Causes) > 0 {
-		err = err.Causes[0]
-	}
-	return err
-}
-
-func schemaInstancePath(parts []string) string {
-	var path strings.Builder
-	path.WriteByte('$')
-	for _, part := range parts {
-		if _, err := strconv.Atoi(part); err == nil {
-			path.WriteByte('[')
-			path.WriteString(part)
-			path.WriteByte(']')
-			continue
-		}
-		path.WriteByte('.')
-		path.WriteString(part)
-	}
-	return path.String()
 }
