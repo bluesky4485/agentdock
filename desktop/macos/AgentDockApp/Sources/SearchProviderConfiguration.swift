@@ -13,6 +13,35 @@ struct SearchProviderConfiguration: Identifiable, Equatable, Codable {
     var isDefault: Bool
     var credentialReady: Bool
 
+    // Core 的 show 输出是 snake_case 契约（key_stored/credential_ready），
+    // 且 is_default 带 omitempty（false 时字段缺席），解码需逐字段兜底。
+    private enum CodingKeys: String, CodingKey {
+        case name, type
+        case apiKey = "api_key"
+        case hasKey = "key_stored"
+        case isDefault = "is_default"
+        case credentialReady = "credential_ready"
+    }
+
+    init(name: String, type: String, apiKey: String?, hasKey: Bool, isDefault: Bool, credentialReady: Bool) {
+        self.name = name
+        self.type = type
+        self.apiKey = apiKey
+        self.hasKey = hasKey
+        self.isDefault = isDefault
+        self.credentialReady = credentialReady
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        type = try container.decode(String.self, forKey: .type)
+        apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey)
+        hasKey = try container.decodeIfPresent(Bool.self, forKey: .hasKey) ?? false
+        isDefault = try container.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
+        credentialReady = try container.decodeIfPresent(Bool.self, forKey: .credentialReady) ?? false
+    }
+
     var id: String { name.isEmpty ? "new-\(type)" : name }
 
     static let builtinTypes = ["tavily", "doubao", "deepseek", "exa", "kimi", "searchfree"]
@@ -22,6 +51,12 @@ struct SearchProviderConfigView: Equatable, Codable {
     var providers: [SearchProviderConfiguration]
     var defaultProvider: String?
     var webFetchEnabled: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case providers
+        case defaultProvider = "default_provider"
+        case webFetchEnabled = "web_fetch_enabled"
+    }
 
     var anyProviderReady: Bool { providers.contains(where: \.credentialReady) }
 }
