@@ -8,7 +8,12 @@ public sealed partial class CapabilitiesPage : Page
 {
     private RuntimeService? _runtime;
     private ControlPanelSettings? _settings;
+    private SearchConfigSettings? _searchConfig;
     private bool _updatingUi;
+
+    // 内置 provider 类型清单：GUI 只暴露这六种；generic http 等高级类型走 CLI 配置文件。
+    private static readonly string[] BuiltinSearchProviderTypes =
+        ["tavily", "doubao", "deepseek", "exa", "kimi", "searchfree"];
 
     public CapabilitiesPage()
     {
@@ -19,6 +24,10 @@ public sealed partial class CapabilitiesPage : Page
         BrowserTitle.Text = UiText.Get("Browser");
         CodingAgentTitle.Text = UiText.Get("CodingAgent");
         McpAppsTitle.Text = UiText.Get("McpApps");
+        SearchTitle.Text = UiText.Get("WebSearch");
+        SearchEnabledToggle.OnContent = "";
+        SearchEnabledToggle.OffContent = "";
+        WebFetchEnabledCheckBox.Content = UiText.Get("WebFetchEnabled");
         ManagedBrowserModeItem.Content = UiText.Get("IsolatedBrowser");
         ReuseBrowserModeItem.Content = UiText.Get("ReuseLocalBrowser");
         SpecifiedBrowserModeItem.Content = UiText.Get("SpecifiedCdp");
@@ -41,6 +50,21 @@ public sealed partial class CapabilitiesPage : Page
         _runtime = e.Parameter as RuntimeService;
         if (_runtime is null) return;
         ApplySettings(await _runtime.GetControlPanelSettingsAsync());
+        if (_runtime is not null)
+        {
+            ApplySearchConfig(await _runtime.GetSearchConfigAsync());
+        }
+    }
+
+    private void ApplySearchConfig(SearchConfigSettings config)
+    {
+        _searchConfig = config;
+        _updatingUi = true;
+        SearchEnabledToggle.IsOn = config.Providers.Any(provider => provider.CredentialReady);
+        WebFetchEnabledCheckBox.IsChecked = config.WebFetchEnabled;
+        RenderSearchProviders(config);
+        _updatingUi = false;
+        UpdateSearchDetail();
     }
 
     private void ApplySettings(ControlPanelSettings settings)
@@ -251,6 +275,149 @@ public sealed partial class CapabilitiesPage : Page
         if (!_updatingUi) UpdateBrowserControls();
     }
 
+    private void UpdateSearchDetail()
+    {
+        if (_searchConfig is null) return;
+        var ready = _searchConfig.Providers.Count(provider => provider.CredentialReady);
+        SearchDetail.Text = ready == 0
+            ? UiText.Get("SearchCapabilityDetail")
+            : string.Format(UiText.Get("SearchProvidersReady"), ready, _searchConfig.Providers.Count);
+    }
+
+    private void RenderSearchProviders(SearchConfigSettings config)
+    {
+        SearchProvidersPanel.Children.Clear();
+
+        foreach (var provider in config.Providers)
+        {
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                HorizontalAlignment = HorizontalAlignment.Left
+            };
+
+            var nameBox = new TextBox
+            {
+                Text = provider.Name,
+                Width = 110,
+                PlaceholderText = UiText.Get("SearchProviderName"),
+                Tag = provider
+            };
+            nameBox.TextChanged += SearchProviderName_Changed;
+            row.Children.Add(nameBox);
+
+            var typeCombo = new ComboBox { Width = 120, Tag = provider };
+            foreach (var type in BuiltinSearchProviderTypes)
+            {
+                typeCombo.Items.Add(new ComboBoxItem { Content = type, Tag = type });
+            }
+            SelectComboTag(typeCombo, provider.Type);
+            typeCombo.SelectionChanged += SearchProviderType_Changed;
+            row.Children.Add(typeCombo);
+
+            var keyBox = new PasswordBox
+            {
+                Width = 190,
+                Tag = provider,
+                PlaceholderText = provider.HasKey ? UiText.Get("SearchKeyStored") : UiText.Get("SearchKeyPlaceholder")
+            };
+            keyBox.PasswordChanged += SearchProviderKey_Changed;
+            row.Children.Add(keyBox);
+
+            var removeButton = new Button { Tag = provider, Content = "✕" };
+            removeButton.Click += SearchProviderRemove_Click;
+            row.Children.Add(removeButton);
+
+            SearchProvidersPanel.Children.Add(row);
+        }
+
+        var addButton = new Button
+        {
+            Content = UiText.Get("AddSearchProvider"),
+            HorizontalAlignment = HorizontalAlignment.Left
+        };
+        addButton.Click += SearchProviderAdd_Click;
+        SearchProvidersPanel.Children.Add(addButton);
+    }
+
+    private void SearchProviderName_Changed(object sender, TextChangedEventArgs e)
+    {
+        if (_updatingUi || sender is not TextBox box || box.Tag is not SearchProviderSettings provider) return;
+        provider.Name = box.Text.Trim();
+    }
+
+    private void SearchProviderType_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingUi || sender is not ComboBox combo || combo.Tag is not SearchProviderSettings provider) return;
+        provider.Type = (combo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? provider.Type;
+        UpdateSearchDetail();
+    }
+
+    private void SearchProviderKey_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_updatingUi || sender is not PasswordBox box || box.Tag is not SearchProviderSettings provider) return;
+        // 输入即暂存到 ApiKey；保存时统一提交。留空且已有 key = 未改动。
+        provider.ApiKey = box.Password;
+    }
+
+    private void SearchProviderRemove_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updatingUi || _searchConfig is null || sender is not Button button || button.Tag is not SearchProviderSettings provider) return;
+        _searchConfig.Providers.Remove(provider);
+        if (string.Equals(_searchConfig.DefaultProvider, provider.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            _searchConfig.DefaultProvider = _searchConfig.Providers.FirstOrDefault()?.Name ?? "";
+        }
+        RenderSearchProviders(_searchConfig);
+        UpdateSearchDetail();
+    }
+
+    private void SearchProviderAdd_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updatingUi || _searchConfig is null) return;
+        var usedTypes = _searchConfig.Providers.Select(provider => provider.Type).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var type = BuiltinSearchProviderTypes.FirstOrDefault(candidate => !usedTypes.Contains(candidate), "tavily");
+        var provider = new SearchProviderSettings
+        {
+            Name = type,
+            Type = type,
+            IsDefault = _searchConfig.Providers.Count == 0
+        };
+        if (_searchConfig.Providers.Count == 0) _searchConfig.DefaultProvider = provider.Name;
+        _searchConfig.Providers.Add(provider);
+        RenderSearchProviders(_searchConfig);
+        UpdateSearchDetail();
+    }
+
+    private async Task SaveSearchConfigAsync()
+    {
+        if (_runtime is null || _searchConfig is null) return;
+        if (SearchEnabledToggle.IsOn)
+        {
+            var withKey = _searchConfig.Providers
+                .Where(provider => provider.HasKey || !string.IsNullOrWhiteSpace(provider.ApiKey))
+                .ToList();
+            if (withKey.Count == 0) throw new InvalidOperationException(UiText.Get("SearchNeedsProvider"));
+            foreach (var provider in withKey)
+            {
+                if (string.IsNullOrWhiteSpace(provider.Name)) throw new InvalidOperationException(UiText.Get("SearchProviderNameRequired"));
+                if (!provider.HasKey && string.IsNullOrWhiteSpace(provider.ApiKey))
+                {
+                    throw new InvalidOperationException(string.Format(UiText.Get("SearchKeyMissing"), provider.Name));
+                }
+            }
+            if (string.IsNullOrWhiteSpace(_searchConfig.DefaultProvider) ||
+                !withKey.Any(provider => string.Equals(provider.Name, _searchConfig.DefaultProvider, StringComparison.OrdinalIgnoreCase)))
+            {
+                _searchConfig.DefaultProvider = withKey[0].Name;
+            }
+        }
+        // PasswordBox 留空且服务端已有 key（HasKey）= 未改动，不提交 api_key 字段；
+        // 输入了新值则提交新值（GUI 形态：全量数组替换，Core 端校验后 0600 原子落盘）。
+        await _runtime.SaveSearchConfigAsync(_searchConfig.Providers, _searchConfig.DefaultProvider, WebFetchEnabledCheckBox.IsChecked == true);
+    }
+
     private void UpdateBrowserControls()
     {
         var mode = (BrowserModeComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "managed";
@@ -290,6 +457,7 @@ public sealed partial class CapabilitiesPage : Page
                 }
             }
             await _runtime.SaveSettingsAsync(_settings);
+            await SaveSearchConfigAsync();
             await _runtime.RunCoreActionAsync("restart");
             SaveStatus.Text = UiText.Get("Saved");
         }

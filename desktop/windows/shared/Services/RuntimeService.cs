@@ -742,6 +742,75 @@ public sealed class RuntimeService : IDisposable
         await RunNativeAgentDockAsync("config", arguments, cancellationToken);
     }
 
+    public async Task<SearchConfigSettings> GetSearchConfigAsync(CancellationToken cancellationToken = default)
+    {
+        var binaryPath = await ResolveCoreBinaryAsync(cancellationToken);
+        var startInfo = CreateRedirectedProcessStartInfo(binaryPath);
+        foreach (var argument in new[] { "search", "config", "show", "--json" })
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+        var output = await RunProcessAsync(startInfo, cancellationToken);
+        return JsonSerializer.Deserialize<SearchConfigSettings>(output, JsonOptions)
+            ?? new SearchConfigSettings();
+    }
+
+    // SaveSearchConfigAsync 通过临时文件把含 key 的配置传给 `search config set --stdin`，
+    // 避免密钥出现在进程命令行；Core 侧校验后以 0600 原子落盘。
+    // providers 为 null 时不改 providers.json；webFetchEnabled 为 null 时不改 policy.json。
+    public async Task SaveSearchConfigAsync(List<SearchProviderSettings>? providers, string defaultProvider, bool? webFetchEnabled, CancellationToken cancellationToken = default)
+    {
+        string? payloadFile = null;
+        try
+        {
+            var payload = new Dictionary<string, object?>();
+            if (providers is not null)
+            {
+                payload["providers"] = providers
+                    .Where(provider => provider.HasKey || !string.IsNullOrWhiteSpace(provider.ApiKey))
+                    .Select(provider => new Dictionary<string, object?>
+                    {
+                        ["name"] = provider.Name,
+                        ["type"] = provider.Type,
+                        ["api_key"] = string.IsNullOrWhiteSpace(provider.ApiKey) ? null : provider.ApiKey
+                    })
+                    .ToList();
+                payload["default_provider"] = defaultProvider ?? "";
+            }
+            if (webFetchEnabled is not null) payload["web_fetch_enabled"] = webFetchEnabled.Value;
+            payloadFile = await WriteSecretFileAsync(JsonSerializer.Serialize(payload, JsonOptions), cancellationToken);
+
+            var binaryPath = await ResolveCoreBinaryAsync(cancellationToken);
+            var startInfo = CreateRedirectedProcessStartInfo(binaryPath);
+            foreach (var argument in new[] { "search", "config", "set", "--stdin" })
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+            startInfo.RedirectStandardInput = true;
+            await RunProcessWithStdinAsync(startInfo, await File.ReadAllTextAsync(payloadFile, cancellationToken), cancellationToken);
+        }
+        finally
+        {
+            DeleteSecretFile(payloadFile);
+        }
+    }
+
+    private static async Task<string> RunProcessWithStdinAsync(ProcessStartInfo startInfo, string stdin, CancellationToken cancellationToken)
+    {
+        using var process = new Process { StartInfo = startInfo };
+        process.Start();
+        await process.StandardInput.WriteAsync(stdin.AsMemory(), cancellationToken);
+        process.StandardInput.Close();
+        var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var error = await process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken);
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? output : error);
+        }
+        return output;
+    }
+
     public async Task PairNexusAsync(string endpoint, string pairingCode, CancellationToken cancellationToken = default)
     {
         endpoint = endpoint.Trim();

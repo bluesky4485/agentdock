@@ -960,4 +960,15 @@ Update now?</value>
   <data name="TrayRestartAgentDock" xml:space="preserve">
     <value>Restart AgentDock</value>
   </data>
+  <data name="WebSearch" xml:space="preserve"><value>Web search</value></data>
+  <data name="WebFetchEnabled" xml:space="preserve"><value>Enable web page fetch (web_fetch)</value></data>
+  <data name="SearchCapabilityDetail" xml:space="preserve"><value>Not configured — configure a provider to enable web_search</value></data>
+  <data name="SearchProvidersReady" xml:space="preserve"><value>{0} of {1} providers ready</value></data>
+  <data name="SearchProviderName" xml:space="preserve"><value>Name</value></data>
+  <data name="SearchKeyStored" xml:space="preserve"><value>Key saved (leave blank to keep)</value></data>
+  <data name="SearchKeyPlaceholder" xml:space="preserve"><value>API key</value></data>
+  <data name="AddSearchProvider" xml:space="preserve"><value>Add provider</value></data>
+  <data name="SearchNeedsProvider" xml:space="preserve"><value>Enable at least one provider with an API key before turning on web search.</value></data>
+  <data name="SearchProviderNameRequired" xml:space="preserve"><value>Every provider needs a name.</value></data>
+  <data name="SearchKeyMissing" xml:space="preserve"><value>Provider "{0}" has no API key configured.</value></data>
 </root>

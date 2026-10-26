@@ -85,6 +85,39 @@
                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                         BorderThickness="1"
                         CornerRadius="10">
+                    <StackPanel HorizontalAlignment="Stretch">
+                    <Grid MinHeight="58"
+                          Padding="13,6"
+                          ColumnSpacing="16"
+                          HorizontalAlignment="Stretch">
+                        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2" VerticalAlignment="Center">
+                            <TextBlock x:Name="SearchTitle" FontSize="13"/>
+                            <TextBlock x:Name="SearchDetail" FontSize="11.5" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SearchEnabledToggle"
+                                      Grid.Column="1"
+                                      HorizontalAlignment="Right"
+                                      VerticalAlignment="Center"
+                                      MinWidth="0"
+                                      OnContent=""
+                                      OffContent=""/>
+                    </Grid>
+                    <StackPanel x:Name="SearchProvidersPanel"
+                                HorizontalAlignment="Stretch"
+                                Margin="13,0,13,0"
+                                Padding="0,0,0,12"
+                                Spacing="8"/>
+                    <StackPanel Padding="13,0,13,12">
+                        <CheckBox x:Name="WebFetchEnabledCheckBox"/>
+                    </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10">
                     <Grid MinHeight="58" Padding="13,6" ColumnSpacing="16">
                         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <StackPanel Spacing="2" VerticalAlignment="Center">

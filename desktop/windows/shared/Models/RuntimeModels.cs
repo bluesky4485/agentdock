@@ -552,3 +552,37 @@ internal sealed class UpdateUiHandoffAck
 }
 
 public sealed record AcpAdapterResolution(bool Available, string Command, IReadOnlyList<string> Arguments, string Message);
+
+public sealed class SearchProviderSettings
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    [JsonPropertyName("type")]
+    public string Type { get; set; } = "";
+
+    // GUI 编辑的 key 只写不读（Core show 输出脱敏）；空值表示"未改动"。
+    [JsonPropertyName("api_key")]
+    public string ApiKey { get; set; } = "";
+
+    [JsonPropertyName("has_key")]
+    public bool HasKey { get; set; }
+
+    [JsonPropertyName("is_default")]
+    public bool IsDefault { get; set; }
+
+    [JsonPropertyName("credential_ready")]
+    public bool CredentialReady { get; set; }
+}
+
+public sealed class SearchConfigSettings
+{
+    [JsonPropertyName("providers")]
+    public List<SearchProviderSettings> Providers { get; set; } = [];
+
+    [JsonPropertyName("default_provider")]
+    public string DefaultProvider { get; set; } = "";
+
+    [JsonPropertyName("web_fetch_enabled")]
+    public bool WebFetchEnabled { get; set; }
+}

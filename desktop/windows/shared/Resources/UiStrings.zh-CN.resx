@@ -960,4 +960,15 @@
   <data name="TrayRestartAgentDock" xml:space="preserve">
     <value>重启 AgentDock</value>
   </data>
+  <data name="WebSearch" xml:space="preserve"><value>联网搜索</value></data>
+  <data name="WebFetchEnabled" xml:space="preserve"><value>启用网页抓取（web_fetch）</value></data>
+  <data name="SearchCapabilityDetail" xml:space="preserve"><value>未配置——添加并配置 provider 后启用 web_search</value></data>
+  <data name="SearchProvidersReady" xml:space="preserve"><value>{1} 个 provider 中 {0} 个就绪</value></data>
+  <data name="SearchProviderName" xml:space="preserve"><value>名称</value></data>
+  <data name="SearchKeyStored" xml:space="preserve"><value>已保存（留空保持不变）</value></data>
+  <data name="SearchKeyPlaceholder" xml:space="preserve"><value>API Key</value></data>
+  <data name="AddSearchProvider" xml:space="preserve"><value>添加 provider</value></data>
+  <data name="SearchNeedsProvider" xml:space="preserve"><value>启用联网搜索前，至少配置一个带 API Key 的 provider。</value></data>
+  <data name="SearchProviderNameRequired" xml:space="preserve"><value>每个 provider 都需要名称。</value></data>
+  <data name="SearchKeyMissing" xml:space="preserve"><value>provider“{0}”尚未配置 API Key。</value></data>
 </root>
