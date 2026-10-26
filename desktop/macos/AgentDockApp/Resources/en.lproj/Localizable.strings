@@ -587,3 +587,20 @@
 "Tray Start" = "Start AgentDock";
 "Tray Restart" = "Restart AgentDock";
 "Tray Check for updates" = "Check for updates";
+
+"Web search" = "Web search";
+"Providers configured here power the node's web_search tool. Keys are stored on this device only." = "Providers configured here power the node's web_search tool. Keys are stored on this device only.";
+"Search providers" = "Search providers";
+"Not configured — add a provider to enable web_search." = "Not configured — add a provider to enable web_search.";
+"Provider type" = "Provider type";
+"API key" = "API key";
+"Add provider" = "Add provider";
+"Web page fetch" = "Web page fetch";
+"Enable web page fetch (web_fetch)" = "Enable web page fetch (web_fetch)";
+"web_fetch reads one page at a time; private network hosts are rejected by policy." = "web_fetch reads one page at a time; private network hosts are rejected by policy.";
+"Key saved" = "Key saved";
+"Make default" = "Make default";
+"Remove" = "Remove";
+"Default" = "Default";
+"Saved. Search configuration applies after restart." = "Saved. Search configuration applies after restart.";
+"Unable to read the search configuration." = "Unable to read the search configuration.";

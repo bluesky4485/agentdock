@@ -532,6 +532,24 @@ final class ServiceController: @unchecked Sendable {
         }
     }
 
+    // runSearchConfigCommand 调用 `agentdock search config show/set`。
+    // stdin 非空时通过 0600 临时文件传给子进程（含 API key 的写路径），
+    // 避免密钥出现在进程参数列表。调用方负责在 set 后重启 Core。
+    func runSearchConfigCommand(arguments: [String], stdin: String?) async throws -> String {
+        try await runInBackground { () -> String in
+            if let stdin {
+                let execution = try writeSearchConfigStdin(
+                    executable: self.paths.binary.path,
+                    arguments: arguments,
+                    payload: stdin)
+                return execution.output
+            }
+            return try runProcess(
+                executable: self.paths.binary.path,
+                arguments: arguments).output
+        }
+    }
+
     func setAutostart(enabled: Bool) async throws {
         if enabled {
             _ = try await start()

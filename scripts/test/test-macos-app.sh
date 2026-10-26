@@ -74,6 +74,7 @@ swiftc \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/DesktopUpdateActivity.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/BackgroundServiceLifecycle.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/ServiceController.swift" \
+  "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/SearchProviderConfiguration.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Sources/InstallerRunner.swift" \
   "$ROOT_DIR/desktop/macos/AgentDockApp/Tests/ServiceControllerValidationTests.swift" \
   -o "$TMP_ROOT/service-controller-validation-tests"

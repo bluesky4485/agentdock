@@ -587,3 +587,20 @@
 "Tray Start" = "启动 AgentDock";
 "Tray Restart" = "重启 AgentDock";
 "Tray Check for updates" = "检查更新";
+
+"Web search" = "联网搜索";
+"Providers configured here power the node's web_search tool. Keys are stored on this device only." = "这里配置的 provider 为节点的 web_search 工具提供搜索能力；Key 只保存在本机。";
+"Search providers" = "搜索 Provider";
+"Not configured — add a provider to enable web_search." = "未配置——添加 provider 后启用 web_search。";
+"Provider type" = "类型";
+"API key" = "API Key";
+"Add provider" = "添加 Provider";
+"Web page fetch" = "网页抓取";
+"Enable web page fetch (web_fetch)" = "启用网页抓取（web_fetch）";
+"web_fetch reads one page at a time; private network hosts are rejected by policy." = "web_fetch 单次抓取一个页面；内网地址默认被策略拒绝。";
+"Key saved" = "Key 已保存";
+"Make default" = "设为默认";
+"Remove" = "移除";
+"Default" = "默认";
+"Saved. Search configuration applies after restart." = "已保存。搜索配置在重启后生效。";
+"Unable to read the search configuration." = "无法读取搜索配置。";

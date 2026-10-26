@@ -106,7 +106,7 @@ private final class ControlPanelModel: ObservableObject {
     }
 
     enum SettingsPage: String, CaseIterable, Identifiable {
-        case appearance, permissions, startup, logs, advancedConnection, about
+        case appearance, permissions, startup, logs, searchProviders, advancedConnection, about
 
         var id: String { rawValue }
         var title: String {
@@ -114,6 +114,7 @@ private final class ControlPanelModel: ObservableObject {
             case .permissions: return L10n.text("Permissions")
             case .startup: return L10n.text("Startup")
             case .logs: return L10n.text("Logs")
+            case .searchProviders: return L10n.text("Web search")
 
             case .advancedConnection: return L10n.text("Advanced connection")
             case .appearance: return L10n.text("Appearance")
@@ -1872,6 +1873,9 @@ private struct SettingsView: View {
                 }
             }
 
+        case .searchProviders:
+            SearchProvidersSettingsView(model: model)
+
         case .advancedConnection:
             VStack(alignment: .leading, spacing: 20) {
                 PageHeader(
@@ -2205,4 +2209,202 @@ private struct SettingsView: View {
 
 private extension Notification.Name {
     static let agentDockOpenPermissions = Notification.Name("AgentDockOpenPermissions")
+}
+
+// provider 列表编辑（内置六种类型 + key 密码框）与 web_fetch 开关。
+// 保存走 `agentdock search config set --stdin` 并随生命周期事务重启 Core。
+struct SearchProvidersSettingsView: View {
+    @ObservedObject var model: ControlPanelModel
+    @State private var config = SearchProviderConfigView()
+    @State private var loaded = false
+    @State private var isSaving = false
+    @State private var statusMessage = ""
+    @State private var expandedNewProvider = false
+    @State private var newProviderType = SearchProviderConfiguration.builtinTypes[0]
+    @State private var newProviderName = ""
+    @State private var newProviderKey = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            PageHeader(
+                title: L10n.text("Web search"),
+                detail: L10n.text("Providers configured here power the node's web_search tool. Keys are stored on this device only.")
+            )
+
+            if loaded {
+                SettingsSection(L10n.text("Search providers")) {
+                    if config.providers.isEmpty {
+                        Text(L10n.text("Not configured — add a provider to enable web_search."))
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 11)
+                    }
+                    ForEach(config.providers) { provider in
+                        providerRow(provider)
+                        if provider.id != config.providers.last?.id {
+                            RowDivider()
+                        }
+                    }
+                    RowDivider()
+                    DisclosureGroup(isExpanded: $expandedNewProvider) {
+                        VStack(spacing: 8) {
+                            Picker(L10n.text("Provider type"), selection: $newProviderType) {
+                                ForEach(SearchProviderConfiguration.builtinTypes, id: \.self) { type in
+                                    Text(type).tag(type)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 220, alignment: .leading)
+                            TextField(L10n.text("Name"), text: $newProviderName)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 220)
+                            SecureField(L10n.text("API key"), text: $newProviderKey)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 220)
+                            HStack {
+                                Spacer()
+                                Button(L10n.text("Add provider")) { addProvider() }
+                                    .controlSize(.small)
+                                    .disabled(newProviderName.trimmingCharacters(in: .whitespaces).isEmpty)
+                            }
+                        }
+                        .padding(.vertical, 6)
+                    } label: {
+                        Text(L10n.text("Add provider"))
+                            .font(.system(size: 12.5))
+                    }
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 8)
+                }
+
+                SettingsSection(L10n.text("Web page fetch")) {
+                    SettingsRow(L10n.text("Enable web page fetch (web_fetch)")) {
+                        Toggle("", isOn: $config.webFetchEnabled)
+                            .labelsHidden()
+                            .disabled(isSaving)
+                    }
+                    RowDivider()
+                    Text(L10n.text("web_fetch reads one page at a time; private network hosts are rejected by policy."))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 8)
+                }
+
+                HStack {
+                    if !statusMessage.isEmpty {
+                        Text(statusMessage)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(L10n.text("Save and restart")) { save() }
+                        .controlSize(.regular)
+                        .disabled(isSaving)
+                }
+            } else {
+                Text(L10n.text("Unable to read the search configuration."))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .task { await reload() }
+    }
+
+    @ViewBuilder private func providerRow(_ provider: SearchProviderConfiguration) -> some View {
+        SettingsRow(provider.name.isEmpty ? provider.type : provider.name) {
+            HStack(spacing: 8) {
+                Text(provider.type)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                if provider.isDefault {
+                    Text(L10n.text("Default"))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                }
+                if provider.hasKey {
+                    Text(L10n.text("Key saved"))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !provider.isDefault {
+                    Button(L10n.text("Make default")) { makeDefault(provider) }
+                        .controlSize(.small)
+                }
+                Button(L10n.text("Remove")) { removeProvider(provider) }
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private func addProvider() {
+        let name = newProviderName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        let key = newProviderKey.trimmingCharacters(in: .whitespaces)
+        config.providers.append(SearchProviderConfiguration(
+            name: name, type: newProviderType, apiKey: key,
+            hasKey: false, isDefault: config.providers.isEmpty,
+            credentialReady: !key.isEmpty))
+        if config.providers.count == 1 { config.defaultProvider = name }
+        newProviderName = ""
+        newProviderKey = ""
+        expandedNewProvider = false
+    }
+
+    private func makeDefault(_ provider: SearchProviderConfiguration) {
+        config.defaultProvider = provider.name
+        config.providers = config.providers.map {
+            var updated = $0
+            updated.isDefault = updated.id == provider.id
+            return updated
+        }
+    }
+
+    private func removeProvider(_ provider: SearchProviderConfiguration) {
+        config.providers.removeAll { $0.id == provider.id }
+        if config.defaultProvider == provider.name {
+            config.defaultProvider = config.providers.first?.name ?? ""
+            if let first = config.providers.first {
+                makeDefault(first)
+            }
+        }
+    }
+
+    private func reload() async {
+        do {
+            config = try await SearchProviderConfigStore.load(controller: model.service)
+            loaded = true
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private func save() {
+        guard !config.providers.isEmpty else { return }
+        isSaving = true
+        statusMessage = ""
+        Task {
+            do {
+                try await SearchProviderConfigStore.save(
+                    controller: model.service,
+                    providers: config.providers,
+                    defaultProvider: config.defaultProvider,
+                    webFetchEnabled: config.webFetchEnabled)
+                await MainActor.run {
+                    statusMessage = L10n.text("Saved. Search configuration applies after restart.")
+                    isSaving = false
+                }
+                await reload()
+            } catch {
+                await MainActor.run {
+                    statusMessage = error.localizedDescription
+                    isSaving = false
+                }
+            }
+        }
+    }
 }
