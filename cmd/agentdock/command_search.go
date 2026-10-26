@@ -57,6 +57,8 @@ func runSearchConfigShowCommand(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("agentdock search config show", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	home := flags.String("agentdock-home", "", "AgentDock state directory (must match Core AGENTDOCK_HOME)")
+	// 输出本身就是 JSON；--json 为 GUI 调用契约保留的显式标记（接受即为兼容）。
+	_ = flags.Bool("json", false, "print machine-readable JSON (default)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
