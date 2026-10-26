@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	sdkjsonrpc "github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -23,6 +24,11 @@ import (
 
 // go-sdk 公开 jsonrpc 包未导出 ErrRejected，只能通过稳定的 wire code 识别。
 const sdkTransportRejectedCode int64 = -32005
+
+// mcpSessionCloseTimeout 只约束会话终止的 HTTP DELETE。
+// SDK 用脱离工具调用超时的连接上下文发这个请求，并且要等它返回后才取消连接；
+// 对端不响应时必须由这里截止，避免清理一直占着服务器状态锁。
+const mcpSessionCloseTimeout = 5 * time.Second
 
 type protocolClient interface {
 	initialize(context.Context) error
@@ -89,7 +95,7 @@ func (c *sdkProtocolClient) transport() (mcpsdk.Transport, error) {
 		}
 		return &mcpsdk.StreamableClientTransport{
 			Endpoint:             c.cfg.URL,
-			HTTPClient:           &http.Client{Transport: headerRoundTripper{headers: headers}},
+			HTTPClient:           &http.Client{Transport: headerRoundTripper{headers: headers}, CheckRedirect: checkMCPRedirect},
 			OAuthHandler:         oauth,
 			MaxRetries:           -1,
 			DisableStandaloneSSE: true,
@@ -133,18 +139,26 @@ func (c *sdkProtocolClient) startStdioTransport() (mcpsdk.Transport, error) {
 	return &mcpsdk.IOTransport{Reader: stdout, Writer: stdin}, nil
 }
 
-func (c *sdkProtocolClient) listTools(ctx context.Context) ([]Tool, error) {
+func (c *sdkProtocolClient) listTools(ctx context.Context) (tools []Tool, err error) {
+	// SDK v1.7.0 会在返回工具前处理参数注解；畸形列表（如 null 元素）可能在
+	// 其内部 panic。外部协议解码失败在此收敛为错误，不能击穿授权后的后台刷新。
+	defer func() {
+		if recover() != nil {
+			tools = nil
+			err = newError("MCP_INVALID_RESPONSE", "MCP tools/list returned an invalid tool definition", false, map[string]any{"server": c.cfg.Name}, nil)
+		}
+	}()
 	if c.session == nil {
 		return nil, newError("MCP_CONNECTION_FAILED", "MCP session is not initialized", true, map[string]any{"server": c.cfg.Name}, nil)
 	}
-	tools := make([]Tool, 0)
+	tools = make([]Tool, 0)
 	for remote, err := range c.session.Tools(ctx, nil) {
 		if err != nil {
 			return nil, c.wrapSDKError("list MCP tools", err)
 		}
 		tool, err := convertSDKTool(remote)
 		if err != nil {
-			return nil, newError("MCP_INVALID_RESPONSE", "decode MCP tool definition", false, map[string]any{"server": c.cfg.Name, "tool": remote.Name}, err)
+			return nil, newError("MCP_INVALID_RESPONSE", "decode MCP tool definition", false, map[string]any{"server": c.cfg.Name}, err)
 		}
 		tools = append(tools, tool)
 	}
@@ -339,8 +353,57 @@ type headerRoundTripper struct {
 	headers http.Header
 }
 
+func checkMCPRedirect(request *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("MCP HTTP redirect limit exceeded")
+	}
+	if len(via) > 0 && (!strings.EqualFold(request.URL.Scheme, via[0].URL.Scheme) || !strings.EqualFold(request.URL.Host, via[0].URL.Host)) {
+		// 传输层会补入静态请求头；OAuth 也可能持有令牌。跨来源或协议降级
+		// 必须在下一个 RoundTrip 之前拒绝，不能依赖标准库删除敏感头。
+		return errors.New("MCP HTTP redirect to a different origin is not allowed")
+	}
+	return nil
+}
+
+type sessionRetirementKey struct{}
+
+func contextWithSessionRetirement(ctx context.Context, retire func()) context.Context {
+	if retire == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionRetirementKey{}, retire)
+}
+
+func retireSessionFromContext(ctx context.Context) {
+	retire, _ := ctx.Value(sessionRetirementKey{}).(func())
+	if retire != nil {
+		retire()
+	}
+}
+
+// retiresMCPSession 报告这个 HTTP 状态会让 SDK 终止逻辑会话，并在返回调用方之前同步发 DELETE。
+// 临时故障和认证挑战会保留或重试连接，不能提前拆掉缓存。
+func retiresMCPSession(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests,
+		http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return false
+	default:
+		return status >= 400
+	}
+}
+
 func (t headerRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	clone := request.Clone(request.Context())
+	ctx := request.Context()
+	if request.Method == http.MethodDelete {
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, mcpSessionCloseTimeout)
+			defer cancel()
+		}
+	}
+	clone := request.Clone(ctx)
 	clone.Header = request.Header.Clone()
 	for name, values := range t.headers {
 		clone.Header.Del(name)
@@ -348,7 +411,14 @@ func (t headerRoundTripper) RoundTrip(request *http.Request) (*http.Response, er
 			clone.Header.Add(name, value)
 		}
 	}
-	return http.DefaultTransport.RoundTrip(clone)
+	response, err := http.DefaultTransport.RoundTrip(clone)
+	if err != nil || response == nil || !retiresMCPSession(response.StatusCode) {
+		return response, err
+	}
+	// 调用协程此刻持有服务器状态锁。必须在把响应交回 SDK 之前退出缓存并放开锁：
+	// SDK 会在 CallTool 返回前同步发送 DELETE，对端不响应时不能继续占着这把锁。
+	retireSessionFromContext(request.Context())
+	return response, nil
 }
 
 type tailBuffer struct {

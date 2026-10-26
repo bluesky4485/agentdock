@@ -50,19 +50,58 @@ type NodeAPI interface {
 }
 
 type Client struct {
-	identity  Identity
-	node      NodeAPI
-	runtime   runtimeapi.Runtime
-	artifacts publicartifacts.Store
-	state     *ConnectionState
-	invokeWG  sync.WaitGroup
-	writeMu   sync.Mutex
-	cancelMu  sync.Mutex
-	cancels   map[string]context.CancelFunc
+	identity         Identity
+	node             NodeAPI
+	runtime          runtimeapi.Runtime
+	artifacts        publicartifacts.Store
+	state            *ConnectionState
+	invokeWG         sync.WaitGroup
+	writeMu          sync.Mutex
+	handshakeTimeout time.Duration
+	readTimeout      time.Duration
+}
+
+// invocationCancels 保存一条 WebSocket 上尚未结束的调用取消函数。
+//
+// RequestID 只在一条连接内唯一。连接断开时父 context 会被取消，但工具调用
+// 不一定马上退出；Run 随后会拨出新连接，服务端可以复用同一个 RequestID。
+// 取消表如果挂在 Client 上，旧调用结束时的 delete 会把新连接刚注册的取消函数一起删掉，
+// 之后服务端再发 tool.cancel，新调用就收不到。所以每条连接一张表，清理时只删自己的。
+type invocationCancels struct {
+	mu      sync.Mutex
+	entries map[string]context.CancelFunc
+}
+
+func newInvocationCancels() *invocationCancels {
+	return &invocationCancels{entries: make(map[string]context.CancelFunc)}
+}
+
+func (r *invocationCancels) register(requestID string, cancel context.CancelFunc) {
+	r.mu.Lock()
+	r.entries[requestID] = cancel
+	r.mu.Unlock()
+}
+
+func (r *invocationCancels) unregister(requestID string) {
+	r.mu.Lock()
+	delete(r.entries, requestID)
+	r.mu.Unlock()
+}
+
+func (r *invocationCancels) cancel(requestID string) {
+	r.mu.Lock()
+	cancel := r.entries[requestID]
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func NewClient(identity Identity, node NodeAPI, runtime runtimeapi.Runtime, artifacts publicartifacts.Store, state *ConnectionState) *Client {
-	return &Client{identity: identity, node: node, runtime: runtime, artifacts: artifacts, state: state, cancels: make(map[string]context.CancelFunc)}
+	return &Client{
+		identity: identity, node: node, runtime: runtime, artifacts: artifacts, state: state,
+		handshakeTimeout: 15 * time.Second, readTimeout: 90 * time.Second,
+	}
 }
 
 func (c *Client) Run(ctx context.Context) {
@@ -203,6 +242,7 @@ func (c *Client) connect(ctx context.Context, rawEndpoint string) connectionOutc
 		return connectionOutcome{err: err, fallbackAllowed: true}
 	}
 	var ready protocol.Message
+	_ = socket.SetReadDeadline(time.Now().Add(c.handshakeTimeout))
 	if err := socket.ReadJSON(&ready); err != nil {
 		return connectionOutcome{err: fmt.Errorf("读取 NexusDock 握手响应: %w", err), fallbackAllowed: fallbackAllowedForSocketError(err)}
 	}
@@ -221,6 +261,12 @@ func (c *Client) connect(ctx context.Context, rawEndpoint string) connectionOutc
 			}
 		}()
 	}
+	// 业务心跳写入成功不代表对端仍在响应。用标准 WebSocket Ping/Pong
+	// 检测半开连接；超时后 ReadJSON 返回，由 Run 负责重新连接。
+	_ = socket.SetReadDeadline(time.Now().Add(c.readTimeout))
+	socket.SetPongHandler(func(string) error {
+		return socket.SetReadDeadline(time.Now().Add(c.readTimeout))
+	})
 	c.state.SetConnected(true)
 	defer c.state.SetConnected(false)
 	connectedAt := time.Now()
@@ -232,6 +278,8 @@ func (c *Client) connect(ctx context.Context, rawEndpoint string) connectionOutc
 	connectionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go c.heartbeat(connectionCtx, socket, heartbeat)
+	// 取消表跟这条连接走，不挂在 Client 上。见 invocationCancels。
+	cancels := newInvocationCancels()
 	for {
 		var incoming protocol.Message
 		if err := socket.ReadJSON(&incoming); err != nil {
@@ -241,15 +289,20 @@ func (c *Client) connect(ctx context.Context, rawEndpoint string) connectionOutc
 				fallbackAllowed: fallbackAllowedForSocketError(err),
 			}
 		}
+		_ = socket.SetReadDeadline(time.Now().Add(c.readTimeout))
 		switch incoming.Type {
 		case protocol.MessageToolInvoke:
+			// 接收循环先注册取消，再交给 goroutine 执行，确保下一帧 cancel 不会丢失。
+			invokeCtx, invokeCancel := context.WithCancel(connectionCtx)
+			cancels.register(incoming.RequestID, invokeCancel)
 			c.invokeWG.Add(1)
 			go func() {
 				defer c.invokeWG.Done()
-				c.invoke(connectionCtx, socket, incoming)
+				defer invokeCancel()
+				c.invoke(invokeCtx, socket, incoming, cancels)
 			}()
 		case protocol.MessageToolCancel:
-			c.cancel(incoming.RequestID)
+			cancels.cancel(incoming.RequestID)
 		case protocol.MessageNodeHeartbeat:
 		}
 	}
@@ -276,18 +329,12 @@ func bridgeHello(identity Identity, tools []string, descriptors []protocol.ToolD
 	}
 }
 
-func (c *Client) invoke(parent context.Context, socket *websocket.Conn, incoming protocol.Message) {
-	ctx, cancel := context.WithCancel(parent)
-	ctx = extractBridgeTraceContext(ctx, &incoming)
-	c.cancelMu.Lock()
-	c.cancels[incoming.RequestID] = cancel
-	c.cancelMu.Unlock()
+func (c *Client) invoke(parent context.Context, socket *websocket.Conn, incoming protocol.Message, cancels *invocationCancels) {
+	ctx := extractBridgeTraceContext(parent, &incoming)
 	defer func() {
 		recovered := recover()
-		cancel()
-		c.cancelMu.Lock()
-		delete(c.cancels, incoming.RequestID)
-		c.cancelMu.Unlock()
+		// 旧调用可能在重连之后才退出。这里只能注销本连接的项。
+		cancels.unregister(incoming.RequestID)
 		if recovered != nil {
 			// Nexus Bridge 是远程 RPC 边界。单次工具 panic 只结束当前请求，
 			// 避免把整个 AgentDock 守护进程和其他本地会话一并带崩。
@@ -389,12 +436,20 @@ func bridgeToolDescriptors(descriptors []map[string]any) ([]protocol.ToolDescrip
 func (c *Client) heartbeat(ctx context.Context, socket *websocket.Conn, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	pingTicker := time.NewTicker(c.readTimeout / 3)
+	defer pingTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			if err := c.write(socket, protocol.Message{Type: protocol.MessageNodeHeartbeat}); err != nil {
+				_ = socket.Close()
+				return
+			}
+		case <-pingTicker.C:
+			// WriteControl 可与数据帧写入并发，避免等待工具响应占用的写锁。
+			if err := socket.WriteControl(websocket.PingMessage, nil, time.Now().Add(15*time.Second)); err != nil {
 				_ = socket.Close()
 				return
 			}
@@ -407,15 +462,6 @@ func (c *Client) write(socket *websocket.Conn, outgoing protocol.Message) error 
 	defer c.writeMu.Unlock()
 	_ = socket.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	return socket.WriteJSON(outgoing)
-}
-
-func (c *Client) cancel(requestID string) {
-	c.cancelMu.Lock()
-	cancel := c.cancels[requestID]
-	c.cancelMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
 }
 
 func bridgeError(err error) *protocol.RemoteError {

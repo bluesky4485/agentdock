@@ -192,14 +192,15 @@ private final class ControlPanelModel: ObservableObject {
         publicEndpointCheckRevision &+= 1
     }
 
-    func applyTunnel(mode: TunnelMode, serverURL: String, tunnelToken: String) async {
+    @discardableResult
+    func applyTunnel(mode: TunnelMode, serverURL: String, tunnelToken: String) async -> Bool {
         let generatingQuickTunnel = mode == .quick
         if generatingQuickTunnel {
             quickTunnelGenerating = true
             invalidatePublicEndpointCheck()
         }
 
-        await perform(recheckPublicEndpointOnSuccess: true) {
+        let succeeded = await perform(recheckPublicEndpointOnSuccess: true) {
             try await self.service.configureTunnel(mode: mode, serverURL: serverURL, tunnelToken: tunnelToken)
         }
 
@@ -209,6 +210,7 @@ private final class ControlPanelModel: ObservableObject {
             quickTunnelGenerating = false
         }
         cloudflaredComponent = await service.cloudflaredComponentStatus()
+        return succeeded
     }
 
     func runCloudflaredComponentAction(_ action: String) async {
@@ -280,13 +282,15 @@ private final class ControlPanelModel: ObservableObject {
         }
     }
 
-    func pairNexus(endpoint: String, code: String) async {
+    @discardableResult
+    func pairNexus(endpoint: String, code: String) async -> Bool {
         await perform(recheckPublicEndpointOnSuccess: true) {
             try await self.service.pairNexus(endpoint: endpoint, pairingCode: code)
         }
     }
 
-    func applySettings(_ settings: EditableServiceSettings) async {
+    @discardableResult
+    func applySettings(_ settings: EditableServiceSettings) async -> Bool {
         await perform(recheckPublicEndpointOnSuccess: true) {
             try await self.configurationController.apply(settings)
         }
@@ -315,12 +319,14 @@ private final class ControlPanelModel: ObservableObject {
         AppAppearance.setPreference(preference)
     }
 
+    @discardableResult
     private func perform(
         recheckPublicEndpointOnSuccess: Bool = false,
         _ operation: @escaping () async throws -> Void
-    ) async {
-        guard !isBusy, !updateActivity.locksApplication else { return }
+    ) async -> Bool {
+        guard !isBusy, !updateActivity.locksApplication else { return false }
         isBusy = true
+        defer { isBusy = false }
         message = nil
         do {
             try await operation()
@@ -329,10 +335,11 @@ private final class ControlPanelModel: ObservableObject {
                 invalidatePublicEndpointCheck()
             }
             onChanged()
+            return true
         } catch {
             message = error.localizedDescription
+            return false
         }
-        isBusy = false
     }
 
     func toggleRuntime() {
@@ -921,6 +928,7 @@ private struct ConnectionsView: View {
     @State private var remoteService: RemoteServiceChoice = .official
     @State private var customEndpoint = ""
     @State private var editingRemoteService = false
+    @State private var connectionInitialized = false
 
     private var nexusDevice: NexusDeviceStatus { model.nexusDevice }
 
@@ -947,7 +955,7 @@ private struct ConnectionsView: View {
                     if editingRemoteService {
                         RowDivider()
                         VStack(alignment: .leading, spacing: 9) {
-                            Picker("", selection: $remoteService) {
+                            Picker(L10n.text("Remote service"), selection: $remoteService) {
                                 Text(L10n.text("Official service")).tag(RemoteServiceChoice.official)
                                 Text(L10n.text("Self-hosted service")).tag(RemoteServiceChoice.selfHosted)
                             }
@@ -996,10 +1004,10 @@ private struct ConnectionsView: View {
                             }
                             Button(L10n.text("Connect")) {
                                 Task {
-                                    await model.pairNexus(endpoint: selectedEndpoint, code: pairingCode)
-                                    if model.message == nil {
+                                    if await model.pairNexus(endpoint: selectedEndpoint, code: pairingCode) {
                                         pairingCode = ""
                                         rePairing = false
+                                        loadConnection()
                                     }
                                 }
                             }
@@ -1046,15 +1054,21 @@ private struct ConnectionsView: View {
             .frame(maxWidth: 760, alignment: .leading)
         }
         .task(id: model.statusUpdatedAt) {
-            let endpoint = nexusDevice.paired ? nexusDevice.endpoint : Self.officialEndpoint
-            if isOfficialEndpoint(endpoint) {
-                remoteService = .official
-                customEndpoint = ""
-            } else {
-                remoteService = .selfHosted
-                customEndpoint = endpoint
-            }
+            guard !connectionInitialized else { return }
+            loadConnection()
         }
+    }
+
+    private func loadConnection() {
+        let endpoint = nexusDevice.paired ? nexusDevice.endpoint : Self.officialEndpoint
+        if isOfficialEndpoint(endpoint) {
+            remoteService = .official
+            customEndpoint = ""
+        } else {
+            remoteService = .selfHosted
+            customEndpoint = endpoint
+        }
+        connectionInitialized = true
     }
 
     private var selectedEndpoint: String {
@@ -1110,6 +1124,7 @@ private struct CapabilitiesView: View {
     @State private var customName = ""
     @State private var customCommand = ""
     @State private var customArguments = ""
+    @State private var configurationInitialized = false
 
     private var configuration: ServiceConfiguration? { model.status.configuration }
 
@@ -1124,7 +1139,7 @@ private struct CapabilitiesView: View {
 
                     SettingsCard {
                         SettingsRow(L10n.text("Browser"), detail: L10n.text("Browser automation and web operations")) {
-                            Toggle("", isOn: $browserEnabled)
+                            Toggle(L10n.text("Browser"), isOn: $browserEnabled)
                                 .labelsHidden()
                                 .toggleStyle(.switch)
                         }
@@ -1150,7 +1165,7 @@ private struct CapabilitiesView: View {
 
                     SettingsCard {
                         SettingsRow(L10n.text("Coding Agent"), detail: codingAgentDetail) {
-                            Toggle("", isOn: $acpEnabled)
+                            Toggle(L10n.text("Coding Agent"), isOn: $acpEnabled)
                                 .labelsHidden()
                                 .toggleStyle(.switch)
                         }
@@ -1168,7 +1183,7 @@ private struct CapabilitiesView: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(profiles.indices, id: \.self) { index in
                                     HStack(spacing: 0) {
-                                        Toggle("", isOn: $profiles[index].enabled)
+                                        Toggle(profileTitle(profiles[index]), isOn: $profiles[index].enabled)
                                             .labelsHidden()
                                             .toggleStyle(.checkbox)
                                             .frame(width: 18, alignment: .leading)
@@ -1202,7 +1217,7 @@ private struct CapabilitiesView: View {
 
                     SettingsCard {
                         SettingsRow(L10n.text("MCP Apps"), detail: L10n.text("Interactive MCP app presentation")) {
-                            Picker("", selection: $selectedMCPAppsMode) {
+                            Picker(L10n.text("MCP Apps"), selection: $selectedMCPAppsMode) {
                                 Text(L10n.text("Full")).tag(MCPAppsMode.full)
                                 Text(L10n.text("Compact")).tag(MCPAppsMode.compact)
                                 Text(L10n.text("Off")).tag(MCPAppsMode.off)
@@ -1223,7 +1238,9 @@ private struct CapabilitiesView: View {
                         acpProfiles: profiles,
                         acpDefaultProfile: defaultProfile
                     )
-                    Task { await model.applySettings(settings) }
+                    Task {
+                        if await model.applySettings(settings) { loadConfiguration() }
+                    }
                 }
                 .disabled(model.isBusy)
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -1234,7 +1251,7 @@ private struct CapabilitiesView: View {
             .frame(maxWidth: 760, alignment: .leading)
         }
         .task(id: model.statusUpdatedAt) {
-            loadConfiguration()
+            if !configurationInitialized { loadConfiguration() }
         }
         .onChange(of: profiles.map(\.enabled)) { _ in
             if !enabledProfiles.contains(where: { $0.id == defaultProfile }) {
@@ -1278,19 +1295,13 @@ private struct CapabilitiesView: View {
         }
         defaultProfile = configuration.acpDefaultProfile
         selectedMCPAppsMode = configuration.mcpAppsMode
+        configurationInitialized = true
     }
 
     private func addCustomProfile() {
         let name = customName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        let base = name.lowercased().map { character -> Character in
-            character.isLetter || character.isNumber || character == "." || character == "_" || character == "-" ? character : "-"
-        }
-        var id = String(base).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        if id.isEmpty { id = "custom" }
-        var suffix = 2
-        let original = id
-        while profiles.contains(where: { $0.id == id }) { id = "\(original)-\(suffix)"; suffix += 1 }
+        let id = ACPDesktopConfiguration.customProfileID(name: name, existingIDs: profiles.map(\.id))
         let args = (try? ACPDesktopConfiguration.decodeArguments(customArguments)) ?? []
         profiles.append(ACPProfileConfiguration(
             id: id,
@@ -1557,6 +1568,7 @@ private struct SettingsView: View {
     @State private var publicEndpointCheckResult: PublicEndpointCheckResult?
     @State private var testedPublicMCPURL: URL?
     @State private var isTestingPublicEndpoint = false
+    @State private var connectionDraftInitialized = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1607,15 +1619,18 @@ private struct SettingsView: View {
         }
         .task(id: model.statusUpdatedAt) {
             if let configuration = model.status.configuration {
-                port = configuration.port
+                if !connectionDraftInitialized { port = configuration.port }
                 logLevel = configuration.logLevel
             }
             tunnelMode = (try? model.service.configuredTunnelMode()) ?? .local
             let savedNamedOrigin = model.service.configuredNamedTunnelOrigin()
-            if !savedNamedOrigin.isEmpty {
-                serverURL = savedNamedOrigin
-            } else if tunnelMode == .named {
-                serverURL = model.status.configuration?.publicURL ?? ""
+            if !connectionDraftInitialized, model.status.configuration != nil {
+                if !savedNamedOrigin.isEmpty {
+                    serverURL = savedNamedOrigin
+                } else if tunnelMode == .named {
+                    serverURL = model.status.configuration?.publicURL ?? ""
+                }
+                connectionDraftInitialized = true
             }
             languagePreference = L10n.languagePreference()
             themePreference = AppAppearance.preference()
@@ -1649,7 +1664,7 @@ private struct SettingsView: View {
                 )
                 SettingsSection(L10n.text("Logs")) {
                     SettingsRow(L10n.text("Log level")) {
-                        Picker("", selection: $logLevel) {
+                        Picker(L10n.text("Log level"), selection: $logLevel) {
                             ForEach(["debug", "info", "warn", "error"], id: \.self) { value in
                                 Text(logLevelTitle(value)).tag(value)
                             }
@@ -1759,14 +1774,14 @@ private struct SettingsView: View {
                 PageHeader(title: L10n.text("Startup"), detail: L10n.text("Background service and menu bar startup behavior."))
                 SettingsSection(L10n.text("Startup")) {
                     SettingsRow(L10n.text("Core background service")) {
-                        Toggle("", isOn: $coreAutostart)
+                        Toggle(L10n.text("Core background service"), isOn: $coreAutostart)
                             .labelsHidden()
                             .toggleStyle(.switch)
                             .onChange(of: coreAutostart) { value in Task { await model.setCoreAutostart(value) } }
                     }
                     RowDivider()
                     SettingsRow(L10n.text("Menu bar app")) {
-                        Toggle("", isOn: $menuAutostart)
+                        Toggle(L10n.text("Menu bar app"), isOn: $menuAutostart)
                             .labelsHidden()
                             .toggleStyle(.switch)
                             .onChange(of: menuAutostart) { value in Task { await model.setMenuAutostart(value) } }
@@ -1782,7 +1797,7 @@ private struct SettingsView: View {
                 )
                 SettingsSection(L10n.text("Appearance")) {
                     SettingsRow(L10n.text("Theme")) {
-                        Picker("", selection: $themePreference) {
+                        Picker(L10n.text("Theme"), selection: $themePreference) {
                             ForEach(UIThemePreference.allCases, id: \.rawValue) { preference in
                                 Text(preference.title).tag(preference)
                             }
@@ -1795,7 +1810,7 @@ private struct SettingsView: View {
                     }
                     RowDivider()
                     SettingsRow(L10n.text("Interface language")) {
-                        Picker("", selection: $languagePreference) {
+                        Picker(L10n.text("Interface language"), selection: $languagePreference) {
                             ForEach(UILanguagePreference.allCases, id: \.rawValue) { preference in
                                 Text(preference.title).tag(preference)
                             }
@@ -1897,7 +1912,7 @@ private struct SettingsView: View {
                     DisclosureGroup(isExpanded: $showCustomPort) {
                         VStack(spacing: 0) {
                             SettingsRow(L10n.text("Service port")) {
-                                TextField("", value: $port, format: .number)
+                                TextField(L10n.text("Service port"), value: $port, format: .number)
                                     .textFieldStyle(.roundedBorder)
                                     .frame(width: 100)
                             }
@@ -1920,7 +1935,11 @@ private struct SettingsView: View {
                                         acpProfiles: configuration.acpProfiles,
                                         acpDefaultProfile: configuration.acpDefaultProfile
                                     )
-                                    Task { await model.applySettings(settings) }
+                                    Task {
+                                        if await model.applySettings(settings) {
+                                            port = model.status.configuration?.port ?? port
+                                        }
+                                    }
                                 }
                                 .controlSize(.small)
                                 .disabled(model.isBusy || port == model.status.configuration?.port)
@@ -2072,8 +2091,10 @@ private struct SettingsView: View {
                             .textFieldStyle(.roundedBorder)
                         Button(L10n.text("Apply fixed domain")) {
                             Task {
-                                await model.applyTunnel(mode: .named, serverURL: serverURL, tunnelToken: tunnelToken)
-                                tunnelToken = ""
+                                if await model.applyTunnel(mode: .named, serverURL: serverURL, tunnelToken: tunnelToken) {
+                                    serverURL = model.service.configuredNamedTunnelOrigin()
+                                    tunnelToken = ""
+                                }
                             }
                         }
                         .disabled(
