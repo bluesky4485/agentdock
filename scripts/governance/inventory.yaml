@@ -91,6 +91,13 @@ scripts:
     public_contract: false
     deletable: true
 
+  - path: scripts/test/test-search-providers.sh
+    class: test
+    owner: desktop
+    public_contract: false
+    deletable: false
+    notes: 搜索提供商连通性测试（政务网环境验证用），与 internal/tool/search 适配器同源。
+
   - path: scripts/test/test-install-windows.ps1
     class: test
     owner: installer
