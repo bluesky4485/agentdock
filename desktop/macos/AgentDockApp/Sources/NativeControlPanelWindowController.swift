@@ -2213,9 +2213,9 @@ private extension Notification.Name {
 
 // provider 列表编辑（内置六种类型 + key 密码框）与 web_fetch 开关。
 // 保存走 `agentdock search config set --stdin` 并随生命周期事务重启 Core。
-struct SearchProvidersSettingsView: View {
+private struct SearchProvidersSettingsView: View {
     @ObservedObject var model: ControlPanelModel
-    @State private var config = SearchProviderConfigView()
+    @State private var config = SearchProviderConfigView(providers: [], defaultProvider: nil, webFetchEnabled: false)
     @State private var loaded = false
     @State private var isSaving = false
     @State private var statusMessage = ""
@@ -2392,7 +2392,7 @@ struct SearchProvidersSettingsView: View {
                 try await SearchProviderConfigStore.save(
                     controller: model.service,
                     providers: config.providers,
-                    defaultProvider: config.defaultProvider,
+                    defaultProvider: config.defaultProvider ?? "",
                     webFetchEnabled: config.webFetchEnabled)
                 await MainActor.run {
                     statusMessage = L10n.text("Saved. Search configuration applies after restart.")
