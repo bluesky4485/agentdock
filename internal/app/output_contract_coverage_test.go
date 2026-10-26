@@ -39,6 +39,8 @@ var outputContractCoverageInventory = map[string]outputContractCoverageEntry{
 	"view_image":               {Variants: []string{"success"}},
 	"recall_search":            {Variants: []string{"success"}},
 	"recall_read":              {Variants: []string{"success"}},
+	"web_search":               {Variants: []string{"success"}},
+	"web_fetch":                {Variants: []string{"success"}},
 	"recall_write":             {Variants: []string{"plan", "create", "replace", "append", "patch", "update_fact", "diff", "delete"}},
 	"recall_maintain":          {Variants: []string{"list"}},
 	"private_note_manage":      {Variants: []string{"search", "read", "write", "delete", "status", "maintain"}},

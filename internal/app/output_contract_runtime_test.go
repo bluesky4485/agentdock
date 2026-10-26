@@ -540,3 +540,66 @@ func TestOutputContractACPHelper(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+func TestRuntimeOutputContractWebSearchFetch(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/search") {
+			_, _ = w.Write([]byte(`{"answer": "synthesised", "results": [{"title": "T", "url": "https://result.example/1", "content": "excerpt", "score": 0.5}]}`))
+			return
+		}
+		_, _ = w.Write([]byte("<html><body><p>正文内容</p></body></html>"))
+	}))
+	defer upstream.Close()
+
+	root := t.TempDir()
+	home := filepath.Join(root, ".agentdock")
+	searchDir := filepath.Join(home, "search")
+	if err := os.MkdirAll(searchDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	providers := fmt.Sprintf(`{"default_provider": "tavily", "providers": [{"name": "tavily", "type": "tavily", "api_key_env": "TEST_OUTPUT_TAVILY_KEY", "endpoint": %q}]}`, upstream.URL+"/search")
+	if err := os.WriteFile(filepath.Join(searchDir, "providers.json"), []byte(providers), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// httptest 绑定 127.0.0.1；fetch 的 SSRF 守卫需要显式放行该主机。
+	policy := `{"web_fetch": {"enabled": true}, "fetch_allow_private_hosts": ["127.0.0.1"]}`
+	if err := os.WriteFile(filepath.Join(searchDir, "policy.json"), []byte(policy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_OUTPUT_TAVILY_KEY", "k")
+
+	cfg := config.Config{AgentDockDefaultDir: root, AgentDockHome: home}
+	if err := cfg.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+
+	surface := make(map[string]bool, len(runtime.ToolNames()))
+	for _, name := range runtime.ToolNames() {
+		surface[name] = true
+	}
+	if !surface["web_search"] || !surface["web_fetch"] {
+		t.Fatalf("configured web tools missing from runtime surface: %v", runtime.ToolNames())
+	}
+
+	result, err := runtime.Call(context.Background(), "web_search", map[string]any{"query": "contract"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertToolResultMatchestestOutputSchema(t, "web_search", result)
+
+	result, err = runtime.Call(context.Background(), "web_fetch", map[string]any{"url": upstream.URL + "/page"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertToolResultMatchestestOutputSchema(t, "web_fetch", result)
+}

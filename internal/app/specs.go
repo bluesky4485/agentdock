@@ -7,6 +7,7 @@ import (
 	mcpcontract "github.com/uvwt/agentdock-protocol/mcpcontract"
 	"github.com/uvwt/agentdock/internal/config"
 	toolcontract "github.com/uvwt/agentdock/internal/tool/contract"
+	toolsearch "github.com/uvwt/agentdock/internal/tool/search"
 )
 
 type ToolHandler func(context.Context, *Runtime, map[string]any) (Result, error)
@@ -152,6 +153,13 @@ func compileAvailableToolContracts(cfg config.Config) ([]string, map[string]*too
 func requiresNexus(cfg config.Config) bool   { return cfg.NexusEndpoint != "" }
 func requiresBrowser(cfg config.Config) bool { return cfg.BrowserEnabled }
 func requiresACP(cfg config.Config) bool     { return cfg.ACPEnabled }
+
+// web_search / web_fetch 按配置门控：providers.json（含 key 就位）与 policy.json
+// 显式开启。未配置时工具不出现在任何工具面（非"存在但报错"）。
+func requiresWebSearch(cfg config.Config) bool {
+	return toolsearch.HasEnabledProvider(cfg.AgentDockHome)
+}
+func requiresWebFetch(cfg config.Config) bool { return toolsearch.FetchEnabled(cfg.AgentDockHome) }
 
 func readOnlyToolAnnotations(openWorld bool) *ToolAnnotations {
 	return &ToolAnnotations{ReadOnlyHint: true, DestructiveHint: boolPointer(false), OpenWorldHint: boolPointer(openWorld)}

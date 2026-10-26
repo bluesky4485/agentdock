@@ -28,6 +28,7 @@ import (
 	toolmedia "github.com/uvwt/agentdock/internal/tool/media"
 	toolplugin "github.com/uvwt/agentdock/internal/tool/plugin"
 	toolrecall "github.com/uvwt/agentdock/internal/tool/recall"
+	toolsearch "github.com/uvwt/agentdock/internal/tool/search"
 	toolskill "github.com/uvwt/agentdock/internal/tool/skill"
 	tooltask "github.com/uvwt/agentdock/internal/tool/task"
 	"github.com/uvwt/agentdock/internal/workspace"
@@ -48,6 +49,7 @@ type Runtime struct {
 	media          *toolmedia.Service
 	browser        *toolbrowser.Service
 	recall         *toolrecall.Service
+	search         *toolsearch.Service
 	evolution      *evolution.Service
 	taskTools      *tooltask.Service
 	acp            *toolacp.Service
@@ -157,6 +159,13 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 		runtime.media.PublishBrowserScreenshot,
 	)
 	runtime.recall = toolrecall.New(func() config.Config { return runtime.cfg })
+	search, err := toolsearch.New(cfg.AgentDockHome)
+	if err != nil {
+		_ = runtime.dynamicMCP.Close()
+		commandCancel()
+		return nil, fmt.Errorf("initialize web search capability: %w", err)
+	}
+	runtime.search = search
 	runtime.evolution = evolution.New(func() config.Config { return runtime.cfg }, tasks)
 	runtime.taskTools = tooltask.New(func() config.Config { return runtime.cfg }, tasks, runtime.evolution)
 	runtime.tracing = observability.NewTracing(nil)
@@ -243,6 +252,11 @@ func (r *Runtime) Close() error {
 		}
 		if r.plugins != nil {
 			r.plugins.ReleaseMCPLeases()
+		}
+		if r.search != nil {
+			if err := r.search.Close(); err != nil {
+				closeErrors = append(closeErrors, fmt.Errorf("close web search runtime: %w", err))
+			}
 		}
 		r.closeErr = errors.Join(closeErrors...)
 	})

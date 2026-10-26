@@ -9,6 +9,7 @@ import (
 	"github.com/uvwt/agentdock/internal/observability"
 	toolmcp "github.com/uvwt/agentdock/internal/tool/mcp"
 	toolplugin "github.com/uvwt/agentdock/internal/tool/plugin"
+	toolsearch "github.com/uvwt/agentdock/internal/tool/search"
 )
 
 const runtimeAPISource = "agentdock-api"
@@ -27,6 +28,8 @@ func (r *Runtime) RuntimeStatus() Result {
 		"browser_enabled":       r.cfg.BrowserEnabled,
 		"memory_enabled":        r.cfg.NexusEndpoint != "",
 		"nexus_enabled":         strings.TrimSpace(r.cfg.NexusEndpoint) != "",
+		"search_providers":      toolsearch.HasEnabledProvider(r.cfg.AgentDockHome),
+		"web_fetch_enabled":     toolsearch.FetchEnabled(r.cfg.AgentDockHome),
 		"tool_count":            len(tools),
 		"tools":                 tools,
 	}

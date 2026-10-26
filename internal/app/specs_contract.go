@@ -11,6 +11,7 @@ import (
 	toolmcp "github.com/uvwt/agentdock/internal/tool/mcp"
 	toolmedia "github.com/uvwt/agentdock/internal/tool/media"
 	toolplugin "github.com/uvwt/agentdock/internal/tool/plugin"
+	toolsearch "github.com/uvwt/agentdock/internal/tool/search"
 	toolskill "github.com/uvwt/agentdock/internal/tool/skill"
 	tooltask "github.com/uvwt/agentdock/internal/tool/task"
 )
@@ -92,4 +93,18 @@ func mediaToolContract(name string, _ config.Config) (ToolContract, bool) {
 
 func browserToolContract(name string, _ config.Config) (ToolContract, bool) {
 	return staticToolContract(name, toolbrowser.InputSchema, toolbrowser.OutputSchema)
+}
+
+func searchToolContract(name string, _ config.Config) (ToolContract, bool) {
+	return staticToolContract(
+		name,
+		func(tool string) (map[string]any, bool) {
+			schema := toolsearch.InputSchema(tool)
+			return schema, schema != nil
+		},
+		func(tool string) (map[string]any, bool) {
+			schema := toolsearch.OutputSchema(tool)
+			return schema, schema != nil
+		},
+	)
 }
