@@ -109,6 +109,78 @@ sudo -u agentdock agentdock nexus status --agentdock-home /srv/agentdock/.agentd
 
 无人值守场景：安装前 export `NEXUS_MODE=official NEXUS_ENDPOINT=... NEXUS_PAIR_CODE=...`，install.sh 安装完成后自动配对。
 
+### 内置 Web 搜索能力配置（仅 CLI）
+
+`web_search` / `web_fetch` 是按配置门控的内置工具：**未配置时工具不出现在任何工具面**（`/mcp`、Nexus Bridge、LLM 工具列表均不可见），配置文件非法则 Core 启动失败。Linux 无 GUI，通过文件/CLI 配置，改完重启服务生效。
+
+CLI 途径（`agentdock search config`，配置校验与 0600 原子写入由 Core 完成）：
+
+```bash
+# 读取当前配置（key 脱敏为 key_stored 布尔位）
+agentdock search config show --agentdock-home /srv/agentdock/.agentdock
+
+# 写入（stdin 文档协议，key 内联；set 后需重启服务）
+echo '{"providers":[{"name":"tavily","type":"tavily","api_key":"tvly-xxx"}],"default_provider":"tavily","web_fetch_enabled":true}' \
+  | sudo -u agentdock agentdock search config set --stdin --agentdock-home /srv/agentdock/.agentdock
+sudo systemctl restart agentdock
+```
+
+直接编辑文件途径（含 generic http 类型与拦截词/域名策略等高级字段）：
+
+```bash
+# 1. 创建搜索配置（AGENTDOCK_HOME 以部署为准，安装脚本默认 /srv/agentdock/.agentdock）
+sudo mkdir -p /srv/agentdock/.agentdock/search
+
+# 2. providers.json：声明搜索服务商。key 本体不落盘，用 api_key_env 引用环境变量
+sudo tee /srv/agentdock/.agentdock/search/providers.json > /dev/null << 'EOF'
+{
+  "config_source": "local",
+  "default_provider": "tavily",
+  "providers": [
+    { "name": "tavily",   "type": "tavily",   "api_key_env": "TAVILY_API_KEY" },
+    { "name": "doubao",   "type": "doubao",   "api_key_env": "DOUBAO_SEARCH_API_KEY" },
+    { "name": "deepseek", "type": "deepseek", "api_key_env": "DEEPSEEK_API_KEY" },
+    { "name": "gov",      "type": "http",
+      "endpoint": "https://gov-search.internal.example/api",
+      "headers": { "X-Api-Key": "${GOV_SEARCH_KEY}" },
+      "request_template": { "q": "{{query}}", "n": "{{max_results}}" },
+      "response_mapping": { "results_path": "data.list", "title": "Title", "url": "Url", "snippet": "Abstract", "published_at": "Time", "score": "Rank" } }
+  ]
+}
+EOF
+
+# 3. policy.json：合规策略。web_fetch 默认关闭，必须显式启用
+sudo tee /srv/agentdock/.agentdock/search/policy.json > /dev/null << 'EOF'
+{
+  "web_fetch": { "enabled": true },
+  "blocked_keywords": [],
+  "blocked_domains": [],
+  "allowed_domains": [],
+  "fetch_allow_private_hosts": []
+}
+EOF
+
+# 4. API key 写进 env 文件（0600，随 systemd 注入 Core 进程）
+sudo tee -a /etc/agentdock/agentdock.env > /dev/null << 'EOF'
+TAVILY_API_KEY=tvly-xxxxxxxx
+# GOV_SEARCH_KEY=internal-gateway-key
+EOF
+sudo chmod 600 /etc/agentdock/agentdock.env
+
+# 5. 重启生效并验证工具面
+sudo systemctl restart agentdock
+curl -s http://127.0.0.1:8765/healthz
+# 状态页 http://127.0.0.1:8765/ 可确认 web_search / web_fetch 已出现在工具列表
+```
+
+说明：
+
+- **免 key 源**（`type: "searchfree"`）同样必须显式写进 providers.json 才会出现；政务 profile 不建议启用。
+- **generic http 类型**（上例 `gov`）面向内网搜索网关：endpoint + 静态头（支持 `${ENV}` 插值，引用变量缺失会启动报错）+ 请求模板 + 响应字段映射，加源只改配置不改代码。
+- **域名策略**同时约束搜索结果过滤与 `web_fetch` 目标；`fetch_allow_private_hosts` 是 web_fetch 访问内网主机的唯一放行通道（默认拒绝 loopback/私网地址，防 SSRF）。
+- **审计日志**：每次搜索/抓取（含被拦截的）落 JSON 行到 `$AGENTDOCK_HOME/logs/search-audit.log`，字段含 trace_id（与 hub 侧会话关联）、provider、耗时、拦截原因。
+- 排错：配置文件 JSON 非法时 Core 启动失败，`journalctl -u agentdock -n 50` 可看到具体校验错误。
+
 ### 与桌面端（Windows/macOS）的差异速览
 
 | 能力 | Windows | macOS | Linux |
@@ -117,6 +189,7 @@ sudo -u agentdock agentdock nexus status --agentdock-home /srv/agentdock/.agentd
 | GUI 控制面板/托盘 | ✅ | ✅ | ❌（CLI + Web 状态页） |
 | 隧道（Cloudflare quick/named） | ✅ | ✅ | ✅ |
 | NexusDock 配对 | GUI + CLI | GUI + CLI | 仅 CLI |
+| Web 搜索（web_search/web_fetch） | GUI 能力页 + CLI | GUI 设置页 + CLI | 仅 CLI（见上文配置指南） |
 | 浏览器自动化 | 宿主 Chrome | 宿主 Chrome | 建议走 Docker 内 Chromium；宿主无桌面时用无头模式，或经 `AGENTDOCK_BROWSER_EXECUTABLE_PATH` 指定国产 Chromium 内核浏览器（奇安信/UOS 浏览器等，CDP 协议理论兼容，需实测验证） |
 
 ## 国产化环境其他注意事项
