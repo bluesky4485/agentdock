@@ -34,6 +34,7 @@ type AuditEntry struct {
 	DurationMS    int64  `json:"duration_ms"`
 	ResultCount   int    `json:"result_count,omitempty"`
 	Outcome       string `json:"outcome"`
+	Engine        string `json:"engine,omitempty"`
 	BlockedReason string `json:"blocked_reason,omitempty"`
 	ErrorCode     string `json:"error_code,omitempty"`
 }

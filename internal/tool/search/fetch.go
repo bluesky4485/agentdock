@@ -3,16 +3,20 @@ package search
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
 	"golang.org/x/net/html"
 
+	"github.com/chromedp/chromedp"
+	toolbrowser "github.com/uvwt/agentdock/internal/tool/browser"
 	toolcore "github.com/uvwt/agentdock/internal/tool/core"
 )
 
@@ -24,6 +28,8 @@ const (
 
 // fetcher 是 web_fetch 的执行器。SSRF 防护在拨号层强制执行：
 // 连接前解析 DNS 并逐一校验解析出的 IP，防止域名解析到内网地址（DNS rebinding）。
+// 跨域重定向被放行：每一跳的拨号层 SSRF 校验与域名策略复检仍然生效，
+// 安全边界跟着"实际要连的主机"走，而不是跟着首跳 URL 走。
 type fetcher struct {
 	policy *Policy
 	client *http.Client
@@ -69,11 +75,20 @@ func newFetcher(policy *Policy) *fetcher {
 		if len(via) >= fetchMaxRedirects {
 			return fmt.Errorf("stopped after %d redirects", fetchMaxRedirects)
 		}
-		if normalizeHost(request.URL.Host) != normalizeHost(via[0].URL.Host) {
-			return fmt.Errorf("redirect to a different host %q is not allowed", request.URL.Host)
-		}
 		if request.URL.Scheme != "http" && request.URL.Scheme != "https" {
 			return fmt.Errorf("redirect scheme %q is not allowed", request.URL.Scheme)
+		}
+		// 跨域跳转放行，但每一跳重新过域名策略：blocked 命中或白名单外的目标一律拦截，
+		// 防止用首跳白名单域名的 302 把内网/受限域名 smuggle 进来。
+		if policy != nil {
+			if reason, allowed := policy.DomainAllowed(request.URL.Hostname()); !allowed {
+				return toolcore.NewErrorDetails(
+					"FETCH_POLICY_BLOCKED",
+					fmt.Sprintf("redirect target host %q was rejected by policy: %s", request.URL.Hostname(), reason),
+					"search",
+					map[string]any{"tool": ToolWebFetch, "redirect_url": request.URL.String()},
+				)
+			}
 		}
 		return nil
 	}
@@ -103,7 +118,15 @@ func (f *fetcher) Fetch(ctx context.Context, parsed *url.URL) (*FetchResponse, e
 
 	response, err := f.client.Do(request)
 	if err != nil {
-		return nil, toolcore.NewErrorCause("FETCH_UPSTREAM_FAILED", "fetch request failed", "search", map[string]any{"tool": ToolWebFetch}, err)
+		// ToolError.Error() 只回 Message；把底层原因（超时/TLS/DNS/重定向被拒）并入
+		// Message 文本，调用方不用猜就能分辨失败类型。Redirect/policy 拦截已是
+		// 带 code 的 ToolError，Error() 取其 Message 后 code 语义仍在 cause 链上保留。
+		message := err.Error()
+		var policyBlocked *toolcore.ToolError
+		if errors.As(err, &policyBlocked) && policyBlocked.Code == "FETCH_POLICY_BLOCKED" {
+			return nil, toolcore.NewErrorCause("FETCH_REDIRECT_BLOCKED", message, "search", map[string]any{"tool": ToolWebFetch}, err)
+		}
+		return nil, toolcore.NewErrorCause("FETCH_UPSTREAM_FAILED", "fetch request failed: "+message, "search", map[string]any{"tool": ToolWebFetch}, err)
 	}
 	defer response.Body.Close()
 
@@ -119,7 +142,7 @@ func (f *fetcher) Fetch(ctx context.Context, parsed *url.URL) (*FetchResponse, e
 
 	data, err := io.ReadAll(io.LimitReader(response.Body, fetchMaxBytes+1))
 	if err != nil {
-		return nil, toolcore.NewErrorCause("FETCH_UPSTREAM_FAILED", "read fetch response", "search", map[string]any{"tool": ToolWebFetch}, err)
+		return nil, toolcore.NewErrorCause("FETCH_UPSTREAM_FAILED", "read fetch response: "+err.Error(), "search", map[string]any{"tool": ToolWebFetch}, err)
 	}
 	truncated := len(data) > fetchMaxBytes
 	if truncated {
@@ -221,6 +244,94 @@ func extractText(data []byte, contentType string) string {
 
 func htmlSelfClosing(tag string) bool {
 	return tag == "svg" || tag == "iframe"
+}
+
+// renderEngine 是 web_fetch 的渲染方式选择。
+type renderEngine string
+
+const (
+	engineAuto    renderEngine = "auto"
+	engineHTTP    renderEngine = "http"
+	engineBrowser renderEngine = "browser"
+)
+
+// thinTextThreshold 是 auto 引擎判定"HTTP 结果内容过薄"的下限：
+// SSR 页面的服务端渲染 HTML 通常远超此值；CSR 空壳与 403 拦截页通常低于此值。
+const thinTextThreshold = 512
+
+// browserRenderer 用 Chromium 渲染单个 URL 并提取可见文本，供 web_fetch 的 browser 引擎使用。
+// 与 browser_session 工具共享 chromedp 依赖，但保持独立的最小会话生命周期：
+// 临时 profile、headless、抓完即弃，不进入 browser 工具的会话簿记。
+type browserRenderer struct {
+	executablePath string
+}
+
+func newBrowserRenderer(executablePath string) *browserRenderer {
+	return &browserRenderer{executablePath: executablePath}
+}
+
+func (r *browserRenderer) render(ctx context.Context, rawURL string) (string, error) {
+	executable, err := toolbrowser.FindExecutable(r.executablePath, toolbrowser.BrowserAuto)
+	if err != nil {
+		return "", err
+	}
+	profileDir, err := os.MkdirTemp("", "agentdock-fetch-")
+	if err != nil {
+		return "", fmt.Errorf("create temporary browser profile: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(profileDir) }()
+
+	options := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
+	options = append(options,
+		chromedp.ExecPath(executable.Path),
+		chromedp.UserDataDir(profileDir),
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-features", "site-per-process,Translate,BlinkGenPropertyTrees,BackForwardCache"),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("no-default-browser-check", true),
+	)
+	allocatorCtx, allocatorCancel := chromedp.NewExecAllocator(context.Background(), options...)
+	defer allocatorCancel()
+	browserCtx, browserCancel := chromedp.NewContext(allocatorCtx)
+	defer browserCancel()
+	renderCtx, renderCancel := context.WithTimeout(browserCtx, fetchTimeout*2)
+	defer renderCancel()
+
+	var text string
+	if err := chromedp.Run(renderCtx,
+		chromedp.Navigate(rawURL),
+		chromedp.WaitReady("body"),
+		chromedp.Evaluate(browserTextExpression(), &text),
+	); err != nil {
+		return "", fmt.Errorf("render page in browser: %w", err)
+	}
+	return strings.TrimSpace(text), nil
+}
+
+// browserTextExpression 在真实 document 上提取可见文本：跳过 script/style/noscript/template/svg，
+// 与 extractText 的 HTML tokenizer 语义一致，再折叠空白。上限与 browser_snapshot 的 maxText 对齐。
+func browserTextExpression() string {
+	return `(function() {
+		const skip = new Set(['script','style','noscript','template','svg','iframe']);
+		const blocks = new Set(['p','div','br','li','tr','table','h1','h2','h3','h4','h5','h6','section','article','header','footer','ul','ol','blockquote','pre','hr','title']);
+		const lines = [];
+		const walk = (node) => {
+			if (!node) return;
+			if (node.nodeType === Node.TEXT_NODE) {
+				const value = (node.textContent || '').replace(/\s+/g, ' ').trim();
+				if (value) lines.push(value);
+				return;
+			}
+			if (node.nodeType !== Node.ELEMENT_NODE) return;
+			const tag = (node.tagName || '').toLowerCase();
+			if (skip.has(tag)) return;
+			if (blocks.has(tag)) lines.push('\n');
+			for (const child of node.childNodes) walk(child);
+			if (blocks.has(tag)) lines.push('\n');
+		};
+		walk(document.body);
+		return lines.join('').split('\n').map((line) => line.trim()).filter(Boolean).join('\n').slice(0, 50000);
+	})()`
 }
 
 func collapseWhitespace(text string) string {

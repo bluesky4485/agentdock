@@ -25,9 +25,16 @@ type Service struct {
 	policy          *Policy
 	audit           *auditLogger
 	fetcher         *fetcher
+	browserRender   *browserRenderer
 }
 
 func New(home string) (*Service, error) {
+	return NewWithBrowser(home, "")
+}
+
+// NewWithBrowser 构造带浏览器渲染能力的 search 服务；executablePath 为空时
+// 由 chromedp 的发现逻辑寻找本机 Chromium 系浏览器，找不到则 browser 引擎在调用时报错。
+func NewWithBrowser(home, executablePath string) (*Service, error) {
 	file, err := LoadProviders(home)
 	if err != nil {
 		return nil, err
@@ -53,6 +60,7 @@ func New(home string) (*Service, error) {
 	}
 	service.defaultProvider = strings.TrimSpace(file.DefaultProvider)
 	service.fetcher = newFetcher(policy)
+	service.browserRender = newBrowserRenderer(executablePath)
 	return service, nil
 }
 
@@ -178,14 +186,79 @@ func (s *Service) Fetch(ctx context.Context, request FetchRequest) (toolcore.Res
 		)
 	}
 
+	engine, err := normalizeFetchEngine(request.Engine)
+	if err != nil {
+		return fail(err)
+	}
+
 	response, err := s.fetcher.Fetch(ctx, parsed)
 	if err != nil {
 		return fail(err)
 	}
+	// auto 引擎：HTML 内容过薄（CSR 空壳、反爬拦截页）且浏览器可用时，
+	// 用浏览器渲染一次替换文本；浏览器渲染失败时保留 HTTP 结果，不整体报错。
+	if engine == engineAuto && shouldRenderInBrowser(response) {
+		rendered, renderErr := s.browserRender.render(ctx, parsed.String())
+		if renderErr != nil {
+			if s.audit != nil {
+				s.audit.Log(AuditEntry{Tool: ToolWebFetch, URL: parsed.String(), Source: source, TraceID: traceID,
+					DurationMS: time.Since(startedAt).Milliseconds(), Outcome: "browser_render_failed", ErrorCode: "FETCH_BROWSER_RENDER_FAILED"})
+			}
+		} else {
+			response.Text = rendered
+			response.RenderEngine = string(engineBrowser)
+		}
+	}
+	if engine == engineBrowser {
+		rendered, renderErr := s.browserRender.render(ctx, parsed.String())
+		if renderErr != nil {
+			return fail(toolcore.NewErrorCause("FETCH_BROWSER_RENDER_FAILED", "render page in browser: "+renderErr.Error(), "search", map[string]any{"tool": ToolWebFetch}, renderErr))
+		}
+		response.Text = rendered
+		response.RenderEngine = string(engineBrowser)
+	}
+	if response.RenderEngine == "" {
+		response.RenderEngine = string(engineHTTP)
+	}
 	entry.DurationMS = time.Since(startedAt).Milliseconds()
 	entry.Outcome = "ok"
+	entry.Engine = response.RenderEngine
 	s.audit.Log(entry)
 	return resultOf(response)
+}
+
+// normalizeFetchEngine 归一化 engine 参数：空值按 auto；未知值报可用取值。
+func normalizeFetchEngine(raw string) (renderEngine, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return engineAuto, nil
+	case string(engineAuto):
+		return engineAuto, nil
+	case string(engineHTTP):
+		return engineHTTP, nil
+	case string(engineBrowser):
+		return engineBrowser, nil
+	default:
+		return "", toolcore.NewErrorDetails(
+			"INVALID_ARGUMENT",
+			fmt.Sprintf("engine %q is not supported; use auto, http, or browser", strings.TrimSpace(raw)),
+			"validation",
+			map[string]any{"tool": ToolWebFetch, "engine": strings.TrimSpace(raw)},
+		)
+	}
+}
+
+// shouldRenderInBrowser 判定 auto 引擎是否需要浏览器渲染：
+// 只对 HTML 且文本过薄的结果降级；非 HTML（JSON/plain）与截断的长文本不触发。
+func shouldRenderInBrowser(response *FetchResponse) bool {
+	if response == nil {
+		return false
+	}
+	mediaType := strings.ToLower(strings.SplitN(response.ContentType, ";", 2)[0])
+	if mediaType != "" && !strings.Contains(mediaType, "html") {
+		return false
+	}
+	return len(strings.TrimSpace(response.Text)) < thinTextThreshold
 }
 
 // resultOf 走一次 JSON 往返，让结构体的 omitempty 语义与公开 output schema 一致。

@@ -23,16 +23,19 @@ type SearchResponse struct {
 	Results      []SearchResult `json:"results"`
 }
 
-// FetchRequest 是 web_fetch 的稳定输入契约。
+// FetchRequest 是 web_fetch 的稳定输入契约。Engine 选择渲染方式：
+// auto（默认）HTTP 先行、内容过薄时浏览器渲染一次；http/browser 显式指定。
 type FetchRequest struct {
-	URL string `json:"url"`
+	URL    string `json:"url"`
+	Engine string `json:"engine,omitempty"`
 }
 
-// FetchResponse 是 web_fetch 的统一响应。
+// FetchResponse 是 web_fetch 的统一响应。RenderEngine 说明最终文本来自哪次渲染。
 type FetchResponse struct {
-	FinalURL    string `json:"final_url"`
-	Status      int    `json:"status"`
-	ContentType string `json:"content_type"`
-	Text        string `json:"text"`
-	Truncated   bool   `json:"truncated"`
+	FinalURL     string `json:"final_url"`
+	Status       int    `json:"status"`
+	ContentType  string `json:"content_type"`
+	Text         string `json:"text"`
+	Truncated    bool   `json:"truncated"`
+	RenderEngine string `json:"render_engine,omitempty"`
 }
