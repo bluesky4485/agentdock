@@ -159,7 +159,7 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 		runtime.media.PublishBrowserScreenshot,
 	)
 	runtime.recall = toolrecall.New(func() config.Config { return runtime.cfg })
-	search, err := toolsearch.New(cfg.AgentDockHome)
+	search, err := toolsearch.NewWithBrowser(cfg.AgentDockHome, cfg.BrowserExecutablePath)
 	if err != nil {
 		_ = runtime.dynamicMCP.Close()
 		commandCancel()

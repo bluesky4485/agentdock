@@ -22,7 +22,12 @@ func InputSchema(name string) map[string]any {
 		}, "query")
 	case ToolWebFetch:
 		return toolcontract.InputObject(map[string]any{
-			"url": toolcontract.String("Absolute http(s) URL of the page to fetch. Redirects must stay on the same host; loopback and private network hosts are rejected by policy."),
+			"url": toolcontract.String("Absolute http(s) URL of the page to fetch. Cross-host redirects are followed, but every hop is re-checked against the node's domain policy; loopback and private network hosts are rejected."),
+			"engine": map[string]any{
+				"type":        "string",
+				"enum":        []string{"auto", "http", "browser"},
+				"description": "Rendering engine. auto (default) fetches over HTTP first and re-renders in a local headless Chromium when the HTML text is suspiciously thin (client-rendered pages, bot-block pages); http never renders; browser always renders. browser requires a Chromium-family browser on this node and falls back to the HTTP result on failure.",
+			},
 		}, "url")
 	default:
 		return nil
@@ -54,11 +59,12 @@ func OutputSchema(name string) map[string]any {
 		})
 	case ToolWebFetch:
 		return toolcontract.OutputObject(map[string]any{
-			"final_url":    toolcontract.String("URL of the final response after redirects."),
-			"status":       toolcontract.Integer("HTTP status code of the final response."),
-			"content_type": toolcontract.String("Content-Type of the final response."),
-			"text":         toolcontract.String("Extracted text content; HTML is reduced to visible text."),
-			"truncated":    toolcontract.Boolean("Whether the content exceeded the size limit and was cut short."),
+			"final_url":     toolcontract.String("URL of the final response after redirects."),
+			"status":        toolcontract.Integer("HTTP status code of the final response."),
+			"content_type":  toolcontract.String("Content-Type of the final response."),
+			"text":          toolcontract.String("Extracted text content; HTML is reduced to visible text."),
+			"truncated":     toolcontract.Boolean("Whether the content exceeded the size limit and was cut short."),
+			"render_engine": toolcontract.String("Engine that produced the returned text: http or browser (browser is used by the auto engine when the HTTP text was too thin, or when engine=browser)."),
 		})
 	default:
 		return nil
