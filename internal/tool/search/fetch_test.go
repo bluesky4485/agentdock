@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -73,22 +74,79 @@ func TestFetchRejectsUnsupportedContentType(t *testing.T) {
 	}
 }
 
-func TestFetchRejectsCrossHostRedirect(t *testing.T) {
+func TestFetchFollowsCrossHostRedirect(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("other host"))
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<div>other host</div>"))
 	}))
 	defer target.Close()
 	// httptest 只绑定 127.0.0.1；用 localhost 构造真正跨主机名的重定向目标。
-	// 同 IP 不同端口属于同域，是允许的（设计：同域重定向）。
+	// 同 IP 不同主机名属于跨域，设计上放行（文档站迁移域名的常态）。
 	redirectTarget := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redirectTarget, http.StatusFound)
 	}))
 	defer source.Close()
 
+	policy := allowLoopbackPolicy()
+	policy.FetchAllowPrivateHosts = normalizeHosts([]string{"127.0.0.1", "localhost"})
+	fetcher := newFetcher(policy)
+	response, err := fetcher.Fetch(context.Background(), mustParse(t, source.URL))
+	if err != nil {
+		t.Fatalf("cross-host redirect must be followed: %v", err)
+	}
+	if response.FinalURL != redirectTarget || !strings.Contains(response.Text, "other host") {
+		t.Fatalf("unexpected fetch envelope: %#v", response)
+	}
+}
+
+func TestFetchRedirectTargetRecheckedAgainstPolicy(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("blocked host"))
+	}))
+	defer target.Close()
+	// 首跳域名在 allowlist 内，重定向目标不在：每一跳必须重新过域名策略。
+	// httptest 目标解析到 127.0.0.1，拨号层放行清单必须同时覆盖两个主机名。
+	redirectTarget := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget, http.StatusFound)
+	}))
+	defer source.Close()
+	sourceHost := mustParse(t, source.URL).Hostname()
+
+	policy := &Policy{
+		WebFetch:               &WebFetchPolicy{Enabled: true},
+		FetchAllowPrivateHosts: normalizeHosts([]string{"127.0.0.1", "localhost"}),
+		AllowedDomains:         []string{sourceHost},
+	}
+	fetcher := newFetcher(policy)
+	_, err := fetcher.Fetch(context.Background(), mustParse(t, source.URL))
+	var toolErr *toolcore.ToolError
+	if !errors.As(err, &toolErr) || toolErr.Code != "FETCH_REDIRECT_BLOCKED" {
+		t.Fatalf("expected FETCH_REDIRECT_BLOCKED, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "localhost") {
+		t.Fatalf("error must name the rejected redirect target: %v", err)
+	}
+}
+
+func TestFetchUpstreamFailureCarriesCause(t *testing.T) {
+	// 拨号到一个立即关闭的端口，制造网络层失败。
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	closedPort := listener.Addr().String()
+	_ = listener.Close()
+
 	fetcher := newFetcher(allowLoopbackPolicy())
-	if _, err := fetcher.Fetch(context.Background(), mustParse(t, source.URL)); err == nil {
-		t.Fatal("cross-host redirect must be rejected")
+	_, fetchErr := fetcher.Fetch(context.Background(), mustParse(t, "http://"+closedPort))
+	var toolErr *toolcore.ToolError
+	if !errors.As(fetchErr, &toolErr) || toolErr.Code != "FETCH_UPSTREAM_FAILED" {
+		t.Fatalf("expected FETCH_UPSTREAM_FAILED, got %v", fetchErr)
+	}
+	if !strings.Contains(toolErr.Message, "fetch request failed: ") || toolErr.Message == "fetch request failed: " {
+		t.Fatalf("message must carry the underlying cause: %q", toolErr.Message)
 	}
 }
 

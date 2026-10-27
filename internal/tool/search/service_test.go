@@ -153,6 +153,52 @@ func TestServiceFetchBlockedDomain(t *testing.T) {
 	}
 }
 
+func TestServiceFetchEngineMetadataAndUnknownEngine(t *testing.T) {
+	server, _ := postEcho(t, "<div>content</div>", http.StatusOK)
+	service, home := newTestService(t, `{"providers": []}`,
+		`{"web_fetch": {"enabled": true}, "fetch_allow_private_hosts": ["127.0.0.1"]}`, server)
+
+	result, err := service.Fetch(context.Background(), FetchRequest{URL: server.URL, Engine: "http"})
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+	if result["render_engine"] != "http" {
+		t.Fatalf("explicit http engine must be recorded: %#v", result["render_engine"])
+	}
+
+	result, err = service.Fetch(context.Background(), FetchRequest{URL: server.URL})
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+	if result["render_engine"] != "http" {
+		t.Fatalf("default engine must resolve to http when browser is unavailable: %#v", result["render_engine"])
+	}
+
+	_, err = service.Fetch(context.Background(), FetchRequest{URL: server.URL, Engine: "nope"})
+	var toolErr *toolcore.ToolError
+	if !errors.As(err, &toolErr) || toolErr.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("unknown engine must fail with INVALID_ARGUMENT, got %v", err)
+	}
+	entries := readAudit(t, home)
+	if len(entries) < 2 || entries[0].Engine != "http" {
+		t.Fatalf("audit must record the render engine: %#v", entries)
+	}
+}
+
+func TestShouldRenderInBrowserThreshold(t *testing.T) {
+	thick := &FetchResponse{ContentType: "text/html", Text: strings.Repeat("x", 600)}
+	thinHTML := &FetchResponse{ContentType: "text/html", Text: "sign in"}
+	thinJSON := &FetchResponse{ContentType: "application/json", Text: "{}"}
+	emptyTypeThin := &FetchResponse{ContentType: "", Text: "sign in"}
+	truncated := &FetchResponse{ContentType: "text/html", Text: strings.Repeat("x", 513), Truncated: true}
+	if shouldRenderInBrowser(thick) || shouldRenderInBrowser(thinJSON) || shouldRenderInBrowser(truncated) {
+		t.Fatal("thick, non-HTML, and truncated results must not trigger browser rendering")
+	}
+	if !shouldRenderInBrowser(thinHTML) || !shouldRenderInBrowser(emptyTypeThin) {
+		t.Fatal("thin HTML results (including missing content-type) must trigger browser rendering")
+	}
+}
+
 func TestSearchSchemasCompileStrictly(t *testing.T) {
 	for _, name := range []string{ToolWebSearch, ToolWebFetch} {
 		input := InputSchema(name)
