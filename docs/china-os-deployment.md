@@ -57,9 +57,18 @@
 
 **方式 B：直接调用安装引擎（100% 离线，与 install.sh 等价）**：
 
+Release 的 Linux tar.gz 内**只含** `bin/agentdock` 与 `share/agentdock/core-skills/`（4 个官方 Skill 包），**不含** `install.sh`——脚本是与发布包平级的独立资产。内网机器上既拿不到脚本、也不想给脚本配下载源时，直接调用二进制内的安装引擎（`agentdock install` 子命令）即可，它与 install.sh 走的是同一条代码路径（脚本只是引擎参数的编排器）。
+
+完整流程（以 v1.2.5 amd64 为例，arm64 换包名即可）：
+
 ```bash
+# 0. 校验包完整性（离线机上用拷入的 .sha256 文件）
+sha256sum -c agentdock_linux_amd64.tar.gz.sha256
+
+# 1. 解压到临时目录
 tar -xzf agentdock_linux_amd64.tar.gz -C /tmp/ad-payload
 
+# 2. 执行安装（参数组合来自 install.sh Linux 分支传给引擎的原样参数）
 sudo /tmp/ad-payload/bin/agentdock install \
   --install-root /opt/agentdock \
   --runtime-root /etc/agentdock \
@@ -74,10 +83,26 @@ sudo /tmp/ad-payload/bin/agentdock install \
   --openrc-dir /etc/init.d \
   --payload-dir /tmp/ad-payload \
   --skill-bundle /tmp/ad-payload/share/agentdock/core-skills \
-  --version <版本号>
+  --version v1.2.5
+
+# 3. 确认认证 Token（安装引擎已自动生成强随机值，无需手工创建）
+sudo grep AGENTDOCK_AUTH_TOKEN /etc/agentdock/agentdock.env
+sudo chmod 600 /etc/agentdock/agentdock.env   # 引擎已收紧，抽查确认未被运维脚本放宽
+
+# 4. 验证服务
+systemctl status agentdock
+curl -s http://127.0.0.1:8765/healthz          # {"ok":true,"version":"v1.2.5"}
 ```
 
-该参数组合来自 `install.sh` 中 Linux 分支传给引擎的原样参数，执行结果（目录布局、env 文件、专用用户、systemd 服务）与脚本安装一致。安装完成后按引擎提示确认 `AGENTDOCK_AUTH_TOKEN`（脚本版会生成强随机 token；手动安装时自行 `openssl rand -hex 32` 写入 env 文件后重启服务）。
+安装结果（目录布局、env 文件、专用用户、systemd 服务）与 install.sh 一致。安装引擎自带事务与回滚，失败时 `agentdock install --repair --install-root /opt/agentdock` 可修复。
+
+**关于认证 Token（MCP 访问密码）**：
+
+- **首次安装自动生成** 32 字节随机 token 写入 `/etc/agentdock/agentdock.env`（0600），升级/重跑时保留已有值不覆盖；也可用 `--auth-token <值>` 指定（推荐改用环境变量 `AGENTDOCK_AUTH_TOKEN` 传入，避免 token 出现在 `/proc/<pid>/cmdline` 中被同机用户看到）。
+- **token 的作用边界**：`/mcp` 与 Runtime API 等能力端点要求 `Authorization: Bearer <token>`；`/healthz` 与 Web 状态页是公开的（仅本机可见的回环监听）。
+- **默认直跑（`./agentdock` 前台，监听 127.0.0.1）无认证**是设计允许的——回环监听外部访问不到；但把 `AGENTDOCK_HOST` 改为非回环地址（如 0.0.0.0）且未配置 token 时，**Core 会直接拒绝启动**（"non-loopback host requires AGENTDOCK_AUTH_TOKEN or OAuth"），不会裸奔。
+- 手工轮换：编辑 env 文件中的 `AGENTDOCK_AUTH_TOKEN` 值（`openssl rand -hex 32` 生成）后 `systemctl restart agentdock`，同时更新所有调用方（Nexus 配对走设备 Token 体系不受影响，直连 `/mcp` 的 HTTP 客户端必须换新头）。
+- 公网暴露（隧道）场景应改用 OAuth 模式（`AGENTDOCK_OAUTH_ENABLED=true` + `AGENTDOCK_OAUTH_PASSWORD` + `AGENTDOCK_OAUTH_TOKEN_SECRET`，install.sh `--tunnel quick/named` 会自动配齐），不要只用静态 Bearer Token。
 
 **方式 C：临时试用**：`chmod +x bin/agentdock && ./agentdock` 前台直跑，数据落在当前用户 `~/.agentdock`，关终端即停。仅建议验证用途，正式部署走 A/B。
 
