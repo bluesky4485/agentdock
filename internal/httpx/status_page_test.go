@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestStatusPageRendersConnectionAndResourceLinks(t *testing.T) {
+func TestStatusPageRendersConnectionInfo(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.OAuthServerURL = "https://agentdock.example.com"
 	cfg.OAuthEnabled = true
@@ -40,19 +40,28 @@ func TestStatusPageRendersConnectionAndResourceLinks(t *testing.T) {
 	for _, expected := range []string{
 		"AgentDock",
 		"https://agentdock.example.com/mcp",
-		"github.com/uvwt/agentdock",
-		"uvwt.github.io/agentdock-docs",
-		"1081337019",
 		`class="state-enabled"`,
 		`class="state-auth"`,
-		`class="resource resource-documentation"`,
 		">OAuth<",
 		">Enabled<",
 		">Plugins<",
 		"navigator.clipboard.writeText",
+		"© 汇智科技",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("status page missing %q", expected)
+		}
+	}
+	// 白标化:状态页不得出现上游仓库、文档站与社区链接。
+	for _, forbidden := range []string{
+		"github.com/uvwt/agentdock",
+		"uvwt.github.io/agentdock-docs",
+		"1081337019",
+		"docs.nexusdock.co",
+		"qun.qq.com",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("status page unexpectedly contains %q", forbidden)
 		}
 	}
 }
@@ -72,10 +81,8 @@ func TestStatusPageUsesChineseForChineseBrowserLanguage(t *testing.T) {
 		"已准备好为 AI Agent 提供能力。",
 		"MCP 端点",
 		`data-copied="已复制"`,
-		"GitHub 仓库",
-		"安装、配置与使用指南。",
+		"© 汇智科技",
 		">插件<",
-		`href="https://docs.nexusdock.co/agentdock/"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("Chinese status page missing %q", expected)
