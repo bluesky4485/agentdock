@@ -200,6 +200,7 @@ curl -s http://127.0.0.1:8765/healthz
 
 说明：
 
+- **生效与上报时机**：工具可用性在 Core 启动时一次性判定（`NewRuntime` → 工具表快照），运行中改配置不会生效——写好配置后必须重启服务。重启后 Nexus Bridge 重连握手（`NodeHello`）会把新的工具清单上报服务端（agenthub/octop 侧据此动态发布），本地 `/mcp` 的 `tools/list` 同步可见；只改配置不重启，两侧均看不到新工具。
 - **免 key 源**（`type: "searchfree"`）同样必须显式写进 providers.json 才会出现；政务 profile 不建议启用。
 - **generic http 类型**（上例 `gov`）面向内网搜索网关：endpoint + 静态头（支持 `${ENV}` 插值，引用变量缺失会启动报错）+ 请求模板 + 响应字段映射，加源只改配置不改代码。
 - **域名策略**同时约束搜索结果过滤与 `web_fetch` 目标；`fetch_allow_private_hosts` 是 web_fetch 访问内网主机的唯一放行通道（默认拒绝 loopback/私网地址，防 SSRF）。
@@ -215,6 +216,8 @@ curl -s http://127.0.0.1:8765/healthz
 | 隧道（Cloudflare quick/named） | ✅ | ✅ | ✅ |
 | NexusDock 配对 | GUI + CLI | GUI + CLI | 仅 CLI |
 | Web 搜索（web_search/web_fetch） | GUI 能力页 + CLI | GUI 设置页 + CLI | 仅 CLI（见上文配置指南） |
+
+> 注：Windows GUI 能力页的 provider 编辑区（名称/类型/API Key/增删）自 **v1.2.6** 起可用——此前版本存在导航路径未加载搜索配置的缺陷，页面上无 provider 填写入口，只能走 CLI。
 | 浏览器自动化 | 宿主 Chrome | 宿主 Chrome | 建议走 Docker 内 Chromium；宿主无桌面时用无头模式，或经 `AGENTDOCK_BROWSER_EXECUTABLE_PATH` 指定国产 Chromium 内核浏览器（奇安信/UOS 浏览器等，CDP 协议理论兼容，需实测验证） |
 
 ## 国产化环境其他注意事项
