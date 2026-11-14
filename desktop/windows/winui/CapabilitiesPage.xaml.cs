@@ -50,15 +50,28 @@ public sealed partial class CapabilitiesPage : Page
         {
             _runtime = request.Runtime;
             ApplySettings(request.Settings);
+            await LoadSearchConfigAsync();
             return;
         }
 
         _runtime = e.Parameter as RuntimeService;
         if (_runtime is null) return;
         ApplySettings(await _runtime.GetControlPanelSettingsAsync());
-        if (_runtime is not null)
+        await LoadSearchConfigAsync();
+    }
+
+    // 搜索配置加载失败（core 未安装、search config show 失败等）不应让能力页中断，
+    // 把错误透出在搜索卡片副标题上，provider 编辑区则保持未渲染。
+    private async Task LoadSearchConfigAsync()
+    {
+        if (_runtime is null) return;
+        try
         {
             ApplySearchConfig(await _runtime.GetSearchConfigAsync());
+        }
+        catch (Exception ex)
+        {
+            SearchDetail.Text = ex.Message;
         }
     }
 
