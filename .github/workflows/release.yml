@@ -204,6 +204,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Dependency vulnerability scan
+        shell: bash
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
       - name: Validate immutable release source
         id: source
         shell: bash

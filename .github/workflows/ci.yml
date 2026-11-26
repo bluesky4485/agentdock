@@ -72,6 +72,10 @@ jobs:
         if: runner.os == 'Linux'
         run: go vet ./...
 
+      - name: Dependency vulnerability scan
+        if: runner.os == 'Linux'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
       - name: Build
         run: go build ./cmd/agentdock
 
