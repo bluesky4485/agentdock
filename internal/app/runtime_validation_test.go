@@ -198,3 +198,37 @@ func newRuntimeValidationTestRuntime(t *testing.T) *Runtime {
 	})
 	return runtime
 }
+
+// 网关（agenthub/mcpgw）会把 node_id 注入公开工具面用于多节点路由；
+// 直连节点或旧版网关可能把它透传进来，节点必须容忍而不是报 INVALID_ARGUMENT。
+func TestRuntimeCallIgnoresGatewayRoutingNodeID(t *testing.T) {
+	runtime := newRuntimeValidationTestRuntime(t)
+	args := map[string]any{"query": "never-match-node-id", "node_id": "node-abc123"}
+	if _, err := runtime.Call(context.Background(), "search_text", args); err != nil {
+		t.Fatalf("search_text with gateway node_id error = %v, want nil", err)
+	}
+	if _, present := args["node_id"]; present {
+		t.Fatal("node_id was not stripped before validation")
+	}
+}
+
+// 自身 InputSchema 声明了 node_id 的工具不能被误剥。
+func TestStripGatewayRoutingArgumentsKeepsDeclaredNodeID(t *testing.T) {
+	args := map[string]any{"node_id": "declared-node"}
+	stripGatewayRoutingArguments(map[string]bool{"declared_tool": true}, "declared_tool", args)
+	if got := args["node_id"]; got != "declared-node" {
+		t.Fatalf("declared node_id = %#v, want preserved", got)
+	}
+	stripGatewayRoutingArguments(nil, "plain_tool", args)
+	if _, present := args["node_id"]; present {
+		t.Fatal("node_id should be stripped for tools without declared node_id")
+	}
+}
+
+// 剥离 node_id 不得放宽其它未知字段的严格校验。
+func TestRuntimeCallStillRejectsOtherUnknownArguments(t *testing.T) {
+	runtime := newRuntimeValidationTestRuntime(t)
+	assertInvalidToolArguments(t, runtime, "search_text", map[string]any{
+		"query": "never", "node_id": "node-abc123", "future_field": true,
+	})
+}

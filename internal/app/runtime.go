@@ -40,6 +40,9 @@ type Runtime struct {
 	cfg            config.Config
 	toolNames      []string
 	toolValidators map[string]*toolcontract.InputValidator
+	// nodeIDArgTools 记录自身 InputSchema 顶层显式声明 node_id 的工具。
+	// 其余工具的 node_id 视为网关路由元数据，在调用前剥离（见 stripGatewayRoutingArguments）。
+	nodeIDArgTools map[string]bool
 	ws             *workspace.Workspace
 	skills         *toolskill.Service
 	command        *toolcommand.Service
@@ -71,6 +74,7 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initialize tool contracts: %w", err)
 	}
+	nodeIDArgTools := collectNodeIDArgTools(toolNames, cfg)
 	ws, err := workspace.New(cfg.AgentDockDefaultDir)
 	if err != nil {
 		return nil, err
@@ -100,8 +104,9 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 	runtime := &Runtime{
 		cfg: cfg, ws: ws, skills: skills,
 		toolNames: toolNames, toolValidators: toolValidators,
-		observer:   observability.NewRecorder(observability.DefaultRecentCapacity),
-		commandCtx: commandCtx, commandCancel: commandCancel,
+		nodeIDArgTools: nodeIDArgTools,
+		observer:       observability.NewRecorder(observability.DefaultRecentCapacity),
+		commandCtx:     commandCtx, commandCancel: commandCancel,
 	}
 	runtime.command = toolcommand.New(func() config.Config { return runtime.cfg }, ws, envs, func(ctx context.Context, skillRef string) (toolcommand.SkillLease, error) {
 		resolved, release, err := skills.Acquire(ctx, skillRef)
@@ -308,6 +313,7 @@ func (r *Runtime) Call(ctx context.Context, name string, args map[string]any) (r
 	if args == nil {
 		args = map[string]any{}
 	}
+	stripGatewayRoutingArguments(r.nodeIDArgTools, name, args)
 	if err = r.validateToolArguments(name, args); err != nil {
 		return nil, err
 	}
@@ -318,6 +324,34 @@ func (r *Runtime) Call(ctx context.Context, name string, args map[string]any) (r
 	}
 	result, err = spec.Handler(ctx, r, args)
 	return result, err
+}
+
+// collectNodeIDArgTools 找出 InputSchema 顶层 properties 显式声明 node_id 的工具。
+// 网关（agenthub/mcpgw）为了多节点路由，会把 node_id 注入公开工具面并要求必填；
+// 节点自身没有 node_id 语义，正常路径由网关消费后剥离，但直连节点或旧版网关
+// 仍可能把它带进参数，触发 additionalProperties:false 的严格校验（INVALID_ARGUMENT）。
+func collectNodeIDArgTools(names []string, cfg config.Config) map[string]bool {
+	out := make(map[string]bool)
+	for _, name := range names {
+		definition, ok := toolDefinitionForConfig(name, cfg)
+		if !ok {
+			continue
+		}
+		properties, _ := definition.InputSchema["properties"].(map[string]any)
+		if _, declared := properties["node_id"]; declared {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// stripGatewayRoutingArguments 剥掉网关为路由注入的顶层 node_id：
+// 只对自身未声明 node_id 的工具生效，避免吞掉未来的合法同名参数。
+func stripGatewayRoutingArguments(nodeIDArgTools map[string]bool, tool string, args map[string]any) {
+	if len(args) == 0 || nodeIDArgTools[tool] {
+		return
+	}
+	delete(args, "node_id")
 }
 
 func (r *Runtime) validateToolArguments(name string, args map[string]any) error {
